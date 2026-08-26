@@ -7,12 +7,10 @@ internal readonly record struct PendingMouseClick(IntPtr Window, NativeMethods.P
 public sealed class PeekSurfaceClickEventArgs : EventArgs
 {
     public IntPtr Monitor { get; }
-    public NativeMethods.POINT Point { get; }
 
-    public PeekSurfaceClickEventArgs(IntPtr monitor, NativeMethods.POINT point)
+    public PeekSurfaceClickEventArgs(IntPtr monitor)
     {
         Monitor = monitor;
-        Point = point;
     }
 }
 
@@ -297,7 +295,7 @@ public sealed class MouseHook : IDisposable
             MonitorTaskbarClicks);
         AppDiagnostics.Log($"Mouse click classification: {clickTarget}");
 
-        var peekSurfaceArgs = new PeekSurfaceClickEventArgs(hMonitor, clickPoint);
+        var peekSurfaceArgs = new PeekSurfaceClickEventArgs(hMonitor);
         switch (clickTarget)
         {
             case DesktopClickTarget.DesktopBackground:
