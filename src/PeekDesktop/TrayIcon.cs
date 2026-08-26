@@ -141,9 +141,19 @@ internal sealed class TrayIcon : IDisposable
 
     private void ToggleStartup()
     {
-        _settings.StartWithWindows = !_settings.StartWithWindows;
+        bool requestedState = !_settings.StartWithWindows;
+        if (!Settings.SetAutoStart(requestedState, out string? error))
+        {
+            NativeMethods.MessageBoxW(
+                IntPtr.Zero,
+                $"PeekDesktop couldn't {(requestedState ? "create" : "remove")} the elevated startup task.\n\n{error ?? "Unknown Task Scheduler error."}",
+                "Start with Windows",
+                NativeMethods.MB_OK | NativeMethods.MB_ICONERROR);
+            return;
+        }
+
+        _settings.StartWithWindows = requestedState;
         _settings.Save();
-        Settings.SetAutoStart(_settings.StartWithWindows);
     }
 
     private void ToggleDoubleClick()
@@ -220,6 +230,7 @@ internal sealed class TrayIcon : IDisposable
             "Click any window or the taskbar to restore.\n" +
             "Peek Style lets you switch between Explorer show desktop\n" +
             "and fly-away mode.\n\n" +
+            "Portable data is stored beside PeekDesktop.exe.\n\n" +
             "Updates come from GitHub Releases.\n\n" +
             "github.com/shanselman/PeekDesktop",
             "About PeekDesktop",
