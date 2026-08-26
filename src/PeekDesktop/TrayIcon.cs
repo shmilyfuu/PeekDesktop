@@ -239,6 +239,9 @@ internal sealed class TrayIcon : IDisposable
 
     private void DoExit()
     {
+        // Restore any FlyAway/native peek state before terminating so windows are
+        // never left parked off-screen when the user exits from the tray menu.
+        _desktopPeek.Stop();
         _flyAwaySettingsWindow?.Dispose();
         _flyAwaySettingsWindow = null;
         _trayIcon.Remove();
