@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/single-monitor-flyaway-animation
+      - feature/winui-settings
   workflow_dispatch:
 
 permissions:
@@ -12,7 +13,7 @@ permissions:
 jobs:
   build-win-x64:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     steps:
       - name: Checkout code
@@ -23,16 +24,51 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore
-        run: dotnet restore src/PeekDesktop/PeekDesktop.csproj
+      - name: Restore core
+        run: dotnet restore src/PeekDesktop/PeekDesktop.csproj -r win-x64
 
-      - name: Publish win-x64 NativeAOT test build
-        run: dotnet publish src/PeekDesktop/PeekDesktop.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -o artifacts/win-x64
+      - name: Restore WinUI settings
+        run: dotnet restore src/PeekDesktop.Settings/PeekDesktop.Settings.csproj -r win-x64
+
+      - name: Publish NativeAOT core
+        run: dotnet publish src/PeekDesktop/PeekDesktop.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -o artifacts/stage/Core
+
+      - name: Publish WinUI settings runtime
+        run: dotnet publish src/PeekDesktop.Settings/PeekDesktop.Settings.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -p:Platform=x64 -p:WindowsAppSDKSelfContained=true -o artifacts/stage/Runtime
+
+      - name: Assemble portable folder
+        shell: pwsh
+        run: |
+          $core = Resolve-Path 'artifacts/stage/Core'
+          $runtime = Resolve-Path 'artifacts/stage/Runtime'
+          $dist = Join-Path $PWD 'artifacts/publish/win-x64'
+          $runtimeDist = Join-Path $dist 'Runtime'
+          $dataDist = Join-Path $dist 'Data'
+
+          Remove-Item $dist -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item $runtimeDist -ItemType Directory -Force | Out-Null
+          New-Item $dataDist -ItemType Directory -Force | Out-Null
+
+          Copy-Item (Join-Path $core 'PeekDesktop.exe') (Join-Path $dist 'PeekDesktop.exe') -Force
+          Copy-Item (Join-Path $runtime '*') $runtimeDist -Recurse -Force
+
+          if (!(Test-Path (Join-Path $runtimeDist 'PeekDesktop.Settings.exe'))) {
+            throw 'Runtime/PeekDesktop.Settings.exe is missing.'
+          }
+
+          $unexpectedRootFiles = @(Get-ChildItem $dist -File | Where-Object Name -ne 'PeekDesktop.exe')
+          if ($unexpectedRootFiles.Count -ne 0) {
+            throw "Unexpected files in application root: $($unexpectedRootFiles.Name -join ', ')"
+          }
+
+          Write-Host 'Portable application root:'
+          Get-ChildItem $dist | Sort-Object PSIsContainer,Name | Select-Object Name,PSIsContainer,Length | Format-Table -AutoSize
+          Write-Host "Runtime files: $(@(Get-ChildItem $runtimeDist -File -Recurse).Count)"
 
       - name: Upload test package
         uses: actions/upload-artifact@v4
         with:
-          name: PeekDesktop-test-win-x64
-          path: artifacts/win-x64/**
+          name: PeekDesktop-test-win-x64-winui
+          path: artifacts/publish/win-x64/**
           if-no-files-found: error
           retention-days: 14
