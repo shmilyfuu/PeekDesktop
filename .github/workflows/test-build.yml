@@ -37,13 +37,19 @@ jobs:
       - name: Publish NativeAOT core
         run: dotnet publish src/PeekDesktop/PeekDesktop.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -o artifacts/stage/Core
 
+      - name: Build WinUI settings
+        id: build_winui
+        continue-on-error: true
+        run: dotnet build src/PeekDesktop.Settings/PeekDesktop.Settings.csproj -c Release -r win-x64 --no-restore --nologo -p:Platform=x64
+
       - name: Publish WinUI settings runtime
         id: publish_winui
+        if: steps.build_winui.outcome == 'success'
         continue-on-error: true
-        run: dotnet publish src/PeekDesktop.Settings/PeekDesktop.Settings.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -p:Platform=x64 -p:WindowsAppSDKSelfContained=true -o artifacts/stage/Runtime
+        run: dotnet publish src/PeekDesktop.Settings/PeekDesktop.Settings.csproj -c Release -r win-x64 --no-restore --nologo -p:Platform=x64 -p:PublishProfile=win-x64
 
       - name: Show WinUI XAML compiler diagnostics
-        if: steps.publish_winui.outcome == 'failure'
+        if: steps.build_winui.outcome == 'failure' || steps.publish_winui.outcome == 'failure'
         shell: pwsh
         run: |
           Write-Host 'WinUI obj diagnostics:'
@@ -54,10 +60,10 @@ jobs:
               Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
             }
 
-      - name: Fail when WinUI publish failed
-        if: steps.publish_winui.outcome == 'failure'
+      - name: Fail when WinUI build or publish failed
+        if: steps.build_winui.outcome == 'failure' || steps.publish_winui.outcome == 'failure'
         shell: pwsh
-        run: throw 'WinUI settings publish failed. See XAML compiler diagnostics above.'
+        run: throw 'WinUI settings build/publish failed. See diagnostics above.'
 
       - name: Assemble portable folder
         shell: pwsh
