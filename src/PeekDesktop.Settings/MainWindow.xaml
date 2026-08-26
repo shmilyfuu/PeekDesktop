@@ -5,62 +5,64 @@
 
     <Grid>
         <ScrollViewer VerticalScrollBarVisibility="Auto">
-            <StackPanel x:Name="SettingsPanel" Padding="32,28,32,36" Spacing="14" IsEnabled="False">
-                <TextBlock Text="PeekDesktop" FontSize="28" FontWeight="SemiBold" />
-                <TextBlock Text="Settings" FontSize="14" Opacity="0.65" Margin="0,-8,0,4" />
+            <Grid Padding="32,28,32,36">
+                <StackPanel x:Name="SettingsPanel" Spacing="14" IsEnabled="False">
+                    <TextBlock Text="PeekDesktop" FontSize="28" FontWeight="SemiBold" />
+                    <TextBlock Text="Settings" FontSize="14" Opacity="0.65" Margin="0,-8,0,4" />
 
-                <InfoBar
-                    x:Name="StatusInfoBar"
-                    IsOpen="False"
-                    IsClosable="True"
-                    Severity="Error" />
+                    <InfoBar
+                        x:Name="StatusInfoBar"
+                        IsOpen="False"
+                        IsClosable="True"
+                        Severity="Error" />
 
-                <TextBlock Text="General" FontSize="20" FontWeight="SemiBold" Margin="0,10,0,0" />
-                <ToggleSwitch x:Name="EnabledToggle" Header="Enabled" Toggled="EnabledToggle_Toggled" />
-                <ToggleSwitch x:Name="StartWithWindowsToggle" Header="Start with Windows" Toggled="StartWithWindowsToggle_Toggled" />
-                <ToggleSwitch x:Name="RequireDoubleClickToggle" Header="Require Double-Click" Toggled="RequireDoubleClickToggle_Toggled" />
+                    <TextBlock Text="General" FontSize="20" FontWeight="SemiBold" Margin="0,10,0,0" />
+                    <ToggleSwitch x:Name="EnabledToggle" Header="Enabled" Toggled="EnabledToggle_Toggled" />
+                    <ToggleSwitch x:Name="StartWithWindowsToggle" Header="Start with Windows" Toggled="StartWithWindowsToggle_Toggled" />
+                    <ToggleSwitch x:Name="RequireDoubleClickToggle" Header="Require Double-Click" Toggled="RequireDoubleClickToggle_Toggled" />
 
-                <TextBlock Text="Peek Behavior" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
-                <ComboBox x:Name="PeekModeCombo" Header="Peek style" Width="320" HorizontalAlignment="Left" SelectionChanged="PeekModeCombo_SelectionChanged">
-                    <ComboBoxItem Content="Show Desktop (Explorer)" Tag="2" />
-                    <ComboBoxItem Content="Fly Away" Tag="1" />
-                </ComboBox>
-                <ToggleSwitch x:Name="PeekOnDesktopClickToggle" Header="Peek on Desktop Click" Toggled="PeekOnDesktopClickToggle_Toggled" />
-                <ToggleSwitch x:Name="PeekOnTaskbarClickToggle" Header="Peek on Taskbar Click" Toggled="PeekOnTaskbarClickToggle_Toggled" />
-                <ToggleSwitch x:Name="RestoreOnAppSwitchToggle" Header="Restore All Windows on App Switch" Toggled="RestoreOnAppSwitchToggle_Toggled" />
-                <ToggleSwitch x:Name="PauseWhileGamingToggle" Header="Pause While Gaming / Full-Screen" Toggled="PauseWhileGamingToggle_Toggled" />
+                    <TextBlock Text="Peek Behavior" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
+                    <ComboBox x:Name="PeekModeCombo" Header="Peek style" Width="320" HorizontalAlignment="Left" SelectionChanged="PeekModeCombo_SelectionChanged">
+                        <ComboBoxItem Content="Show Desktop (Explorer)" Tag="2" />
+                        <ComboBoxItem Content="Fly Away" Tag="1" />
+                    </ComboBox>
+                    <ToggleSwitch x:Name="PeekOnDesktopClickToggle" Header="Peek on Desktop Click" Toggled="PeekOnDesktopClickToggle_Toggled" />
+                    <ToggleSwitch x:Name="PeekOnTaskbarClickToggle" Header="Peek on Taskbar Click" Toggled="PeekOnTaskbarClickToggle_Toggled" />
+                    <ToggleSwitch x:Name="RestoreOnAppSwitchToggle" Header="Restore All Windows on App Switch" Toggled="RestoreOnAppSwitchToggle_Toggled" />
+                    <ToggleSwitch x:Name="PauseWhileGamingToggle" Header="Pause While Gaming / Full-Screen" Toggled="PauseWhileGamingToggle_Toggled" />
 
-                <TextBlock Text="Fly Away" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
-                <ToggleSwitch x:Name="OnlyClickedMonitorToggle" Header="Only Clicked Monitor" Toggled="OnlyClickedMonitorToggle_Toggled" />
-                <ComboBox x:Name="DurationCombo" Header="Animation duration" Width="320" HorizontalAlignment="Left" SelectionChanged="DurationCombo_SelectionChanged">
-                    <ComboBoxItem Content="200 ms" Tag="200" />
-                    <ComboBoxItem Content="260 ms" Tag="260" />
-                    <ComboBoxItem Content="320 ms" Tag="320" />
-                    <ComboBoxItem Content="400 ms" Tag="400" />
-                    <ComboBoxItem Content="500 ms" Tag="500" />
-                </ComboBox>
-                <ComboBox x:Name="FrameRateCombo" Header="Frame rate" Width="320" HorizontalAlignment="Left" SelectionChanged="FrameRateCombo_SelectionChanged">
-                    <ComboBoxItem Content="30 FPS" Tag="30" />
-                    <ComboBoxItem Content="60 FPS" Tag="60" />
-                    <ComboBoxItem Content="90 FPS" Tag="90" />
-                    <ComboBoxItem Content="120 FPS" Tag="120" />
-                </ComboBox>
-                <TextBlock x:Name="EstimatedFramesText" Text="Estimated frames per direction: ~20" Opacity="0.65" />
+                    <TextBlock Text="Fly Away" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
+                    <ToggleSwitch x:Name="OnlyClickedMonitorToggle" Header="Only Clicked Monitor" Toggled="OnlyClickedMonitorToggle_Toggled" />
+                    <ComboBox x:Name="DurationCombo" Header="Animation duration" Width="320" HorizontalAlignment="Left" SelectionChanged="DurationCombo_SelectionChanged">
+                        <ComboBoxItem Content="200 ms" Tag="200" />
+                        <ComboBoxItem Content="260 ms" Tag="260" />
+                        <ComboBoxItem Content="320 ms" Tag="320" />
+                        <ComboBoxItem Content="400 ms" Tag="400" />
+                        <ComboBoxItem Content="500 ms" Tag="500" />
+                    </ComboBox>
+                    <ComboBox x:Name="FrameRateCombo" Header="Frame rate" Width="320" HorizontalAlignment="Left" SelectionChanged="FrameRateCombo_SelectionChanged">
+                        <ComboBoxItem Content="30 FPS" Tag="30" />
+                        <ComboBoxItem Content="60 FPS" Tag="60" />
+                        <ComboBoxItem Content="90 FPS" Tag="90" />
+                        <ComboBoxItem Content="120 FPS" Tag="120" />
+                    </ComboBox>
+                    <TextBlock x:Name="EstimatedFramesText" Text="Estimated frames per direction: ~20" Opacity="0.65" />
 
-                <TextBlock Text="Updates" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
-                <ToggleSwitch Header="Auto-Check for Updates" IsOn="False" IsEnabled="False" />
-                <Button Content="Check for Updates" IsEnabled="False" HorizontalAlignment="Left" />
-                <TextBlock
-                    Text="Updates are temporarily disabled while the fork's update strategy is being redesigned."
-                    TextWrapping="Wrap"
-                    Opacity="0.65"
-                    MaxWidth="520"
-                    HorizontalAlignment="Left" />
+                    <TextBlock Text="Updates" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
+                    <ToggleSwitch Header="Auto-Check for Updates" IsOn="False" IsEnabled="False" />
+                    <Button Content="Check for Updates" IsEnabled="False" HorizontalAlignment="Left" />
+                    <TextBlock
+                        Text="Updates are temporarily disabled while the fork's update strategy is being redesigned."
+                        TextWrapping="Wrap"
+                        Opacity="0.65"
+                        MaxWidth="520"
+                        HorizontalAlignment="Left" />
 
-                <TextBlock Text="About" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
-                <TextBlock x:Name="VersionText" Text="Version" />
-                <TextBlock Text="Portable data is stored in the Data folder beside PeekDesktop.exe." TextWrapping="Wrap" Opacity="0.65" />
-            </StackPanel>
+                    <TextBlock Text="About" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
+                    <TextBlock x:Name="VersionText" Text="Version" />
+                    <TextBlock Text="Portable data is stored in the Data folder beside PeekDesktop.exe." TextWrapping="Wrap" Opacity="0.65" />
+                </StackPanel>
+            </Grid>
         </ScrollViewer>
     </Grid>
 </Window>
