@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace PeekDesktop;
 
@@ -125,17 +126,29 @@ public sealed class WindowTracker
         return removedHandles.ToArray();
     }
 
+    public Task FlyAwayAllAsync(CancellationToken cancellationToken)
+    {
+        return Task.Run(() => FlyAwayAll(cancellationToken), cancellationToken);
+    }
+
     /// <summary>
     /// Move captured windows toward the corner of the screen they are already closest to.
     /// This is an experiment to mimic macOS-style "show desktop" animation.
     /// </summary>
     public void FlyAwayAll()
     {
+        FlyAwayAll(CancellationToken.None);
+    }
+
+    private void FlyAwayAll(CancellationToken cancellationToken)
+    {
         var stopwatch = Stopwatch.StartNew();
         var animationWindows = new List<AnimatedWindow>(_savedWindows.Count);
 
         foreach (var window in _savedWindows)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (!NativeMethods.IsWindow(window.Handle))
                 continue;
 
@@ -155,8 +168,13 @@ public sealed class WindowTracker
             animationWindows.Add(new AnimatedWindow(window.Handle, startBounds, targetBounds));
         }
 
-        AnimateWindows(animationWindows);
+        AnimateWindows(animationWindows, cancellationToken);
         AppDiagnostics.Metric($"FlyAwayAll: {animationWindows.Count} window(s) in {stopwatch.ElapsedMilliseconds}ms");
+    }
+
+    public Task RestoreAllAsync(PeekMode peekMode, CancellationToken cancellationToken)
+    {
+        return Task.Run(() => RestoreAll(peekMode, cancellationToken), cancellationToken);
     }
 
     /// <summary>
@@ -164,6 +182,11 @@ public sealed class WindowTracker
     /// Restores bottom-to-top to preserve Z-order, and does NOT steal focus.
     /// </summary>
     public void RestoreAll(PeekMode peekMode = PeekMode.Minimize)
+    {
+        RestoreAll(peekMode, CancellationToken.None);
+    }
+
+    private void RestoreAll(PeekMode peekMode, CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
         int restoredCount = 0;
@@ -174,6 +197,8 @@ public sealed class WindowTracker
 
             foreach (var info in _savedWindows)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (!NativeMethods.IsWindow(info.Handle))
                     continue;
 
@@ -184,12 +209,14 @@ public sealed class WindowTracker
                 animationWindows.Add(new AnimatedWindow(info.Handle, startBounds, endBounds));
             }
 
-            AnimateWindows(animationWindows);
+            AnimateWindows(animationWindows, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
         // Restore in reverse order (bottom windows first) to preserve Z-order
         for (int i = _savedWindows.Count - 1; i >= 0; i--)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var info = _savedWindows[i];
 
             // Skip windows that were destroyed while we were peeking
@@ -314,7 +341,7 @@ public sealed class WindowTracker
         };
     }
 
-    private void AnimateWindows(IReadOnlyList<AnimatedWindow> windows)
+    private void AnimateWindows(IReadOnlyList<AnimatedWindow> windows, CancellationToken cancellationToken)
     {
         if (windows.Count == 0)
             return;
@@ -326,15 +353,19 @@ public sealed class WindowTracker
                          | NativeMethods.SWP_NOSENDCHANGING
                          | NativeMethods.SWP_ASYNCWINDOWPOS;
 
-        double durationMs = _flyAwayAnimationDurationMs;
-        double frameIntervalMs = 1000d / _flyAwayAnimationFrameRate;
+        int durationMs = _flyAwayAnimationDurationMs;
+        int frameRate = _flyAwayAnimationFrameRate;
+        double frameIntervalMs = 1000d / frameRate;
         double nextFrameMs = Math.Min(frameIntervalMs, durationMs);
         var animationClock = Stopwatch.StartNew();
         int renderedFrames = 0;
 
+        using var waitTimer = new AnimationWaitTimer();
+
         while (true)
         {
-            WaitUntil(animationClock, nextFrameMs);
+            cancellationToken.ThrowIfCancellationRequested();
+            WaitUntil(animationClock, nextFrameMs, waitTimer, cancellationToken);
 
             double elapsedMs = Math.Min(animationClock.Elapsed.TotalMilliseconds, durationMs);
             double linearProgress = durationMs <= 0d ? 1d : elapsedMs / durationMs;
@@ -342,6 +373,8 @@ public sealed class WindowTracker
 
             foreach (var window in windows)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (!NativeMethods.IsWindow(window.Handle))
                     continue;
 
@@ -370,25 +403,24 @@ public sealed class WindowTracker
 
         AppDiagnostics.Metric(
             $"AnimateWindows: {windows.Count} window(s), {renderedFrames} frame(s), " +
-            $"target={_flyAwayAnimationDurationMs}ms/{_flyAwayAnimationFrameRate}fps, actual={animationClock.ElapsedMilliseconds}ms");
+            $"target={durationMs}ms/{frameRate}fps, actual={animationClock.ElapsedMilliseconds}ms");
     }
 
-    private static void WaitUntil(Stopwatch stopwatch, double targetElapsedMs)
+    private static void WaitUntil(
+        Stopwatch stopwatch,
+        double targetElapsedMs,
+        AnimationWaitTimer waitTimer,
+        CancellationToken cancellationToken)
     {
         while (true)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             double remainingMs = targetElapsedMs - stopwatch.Elapsed.TotalMilliseconds;
             if (remainingMs <= 0d)
                 return;
 
-            if (remainingMs > 2d)
-            {
-                Thread.Sleep(Math.Max(1, (int)Math.Floor(remainingMs - 1d)));
-            }
-            else
-            {
-                Thread.Yield();
-            }
+            waitTimer.Wait(remainingMs);
         }
     }
 
@@ -415,6 +447,95 @@ public sealed class WindowTracker
     private static int Lerp(int from, int to, double t)
     {
         return (int)Math.Round(from + ((to - from) * t));
+    }
+
+    private sealed class AnimationWaitTimer : IDisposable
+    {
+        private const uint CreateWaitableTimerHighResolution = 0x00000002;
+        private const uint TimerModifyState = 0x0002;
+        private const uint Synchronize = 0x00100000;
+        private const uint Infinite = 0xFFFFFFFF;
+
+        private IntPtr _handle;
+
+        public AnimationWaitTimer()
+        {
+            uint access = TimerModifyState | Synchronize;
+            _handle = CreateWaitableTimerExW(
+                IntPtr.Zero,
+                null,
+                CreateWaitableTimerHighResolution,
+                access);
+
+            if (_handle == IntPtr.Zero)
+            {
+                _handle = CreateWaitableTimerExW(
+                    IntPtr.Zero,
+                    null,
+                    0,
+                    access);
+            }
+        }
+
+        public void Wait(double milliseconds)
+        {
+            if (milliseconds <= 0d)
+                return;
+
+            if (_handle == IntPtr.Zero)
+            {
+                Thread.Sleep(Math.Max(1, (int)Math.Ceiling(milliseconds)));
+                return;
+            }
+
+            long dueTime = -(long)Math.Max(1d, Math.Round(milliseconds * 10_000d));
+            if (!SetWaitableTimer(
+                    _handle,
+                    ref dueTime,
+                    0,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    false))
+            {
+                Thread.Sleep(Math.Max(1, (int)Math.Ceiling(milliseconds)));
+                return;
+            }
+
+            _ = WaitForSingleObject(_handle, Infinite);
+        }
+
+        public void Dispose()
+        {
+            if (_handle == IntPtr.Zero)
+                return;
+
+            CloseHandle(_handle);
+            _handle = IntPtr.Zero;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateWaitableTimerExW(
+            IntPtr lpTimerAttributes,
+            string? lpTimerName,
+            uint dwFlags,
+            uint dwDesiredAccess);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetWaitableTimer(
+            IntPtr hTimer,
+            ref long pDueTime,
+            int lPeriod,
+            IntPtr pfnCompletionRoutine,
+            IntPtr lpArgToCompletionRoutine,
+            [MarshalAs(UnmanagedType.Bool)] bool fResume);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+        [DllImport("kernel32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr hObject);
     }
 
     private record WindowInfo(IntPtr Handle, NativeMethods.WINDOWPLACEMENT Placement, NativeMethods.RECT Bounds);
