@@ -2,13 +2,12 @@ using System;
 using System.Buffers;
 using System.IO;
 using System.Text.Json;
-using Microsoft.Win32;
 
 namespace PeekDesktop;
 
 /// <summary>
-/// Persists user settings (enabled state, autostart) as JSON in %APPDATA%
-/// and manages the Windows Run registry key for auto-start.
+/// Persists user settings beside the executable under data\settings.json.
+/// The previous AppData location is read once for migration but is never written again.
 /// </summary>
 public sealed class Settings
 {
@@ -19,11 +18,10 @@ public sealed class Settings
     public const int MinFlyAwayAnimationFrameRate = 15;
     public const int MaxFlyAwayAnimationFrameRate = 240;
 
-    private static readonly string SettingsDir = Path.Combine(
+    private static readonly string LegacySettingsPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "PeekDesktop");
-
-    private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
+        "PeekDesktop",
+        "settings.json");
 
     public bool Enabled { get; set; } = true;
     public bool StartWithWindows { get; set; } = false;
@@ -42,17 +40,33 @@ public sealed class Settings
     {
         try
         {
-            if (File.Exists(SettingsPath))
+            string? sourcePath = null;
+            bool loadedFromLegacyLocation = false;
+
+            if (File.Exists(PortablePaths.SettingsPath))
             {
-                byte[] jsonBytes = File.ReadAllBytes(SettingsPath);
+                sourcePath = PortablePaths.SettingsPath;
+            }
+            else if (File.Exists(LegacySettingsPath))
+            {
+                sourcePath = LegacySettingsPath;
+                loadedFromLegacyLocation = true;
+                AppDiagnostics.Log($"Migrating settings from legacy path: {LegacySettingsPath}");
+            }
+
+            if (sourcePath is not null)
+            {
+                byte[] jsonBytes = File.ReadAllBytes(sourcePath);
                 bool missingTaskbarClickSetting = !JsonContainsProperty(jsonBytes, "PeekOnTaskbarClick"u8);
-                bool shouldSave = !JsonContainsProperty(jsonBytes, "RestoreHiddenWindowsOnAppOpen"u8)
+                bool shouldSave = loadedFromLegacyLocation
+                    || !JsonContainsProperty(jsonBytes, "RestoreHiddenWindowsOnAppOpen"u8)
                     || !JsonContainsProperty(jsonBytes, "AutoCheckForUpdates"u8)
                     || !JsonContainsProperty(jsonBytes, "PeekOnDesktopClick"u8)
                     || !JsonContainsProperty(jsonBytes, "FlyAwayOnlyClickedMonitor"u8)
                     || !JsonContainsProperty(jsonBytes, "FlyAwayAnimationDurationMs"u8)
                     || !JsonContainsProperty(jsonBytes, "FlyAwayAnimationFrameRate"u8)
                     || missingTaskbarClickSetting;
+
                 Settings settings = DeserializeUtf8(jsonBytes);
                 if (missingTaskbarClickSetting)
                     settings.PeekOnTaskbarClick = true;
@@ -88,13 +102,17 @@ public sealed class Settings
                 if (shouldSave)
                     settings.Save();
 
+                if (loadedFromLegacyLocation && File.Exists(PortablePaths.SettingsPath))
+                    CleanupLegacySettings();
+
                 return settings;
             }
         }
         catch (Exception ex)
         {
-            AppDiagnostics.Log($"Failed to load settings from {SettingsPath}: {ex.Message}");
+            AppDiagnostics.Log($"Failed to load settings: {ex.Message}");
         }
+
         return new Settings();
     }
 
@@ -102,13 +120,35 @@ public sealed class Settings
     {
         try
         {
-            Directory.CreateDirectory(SettingsDir);
+            PortablePaths.EnsureDataDirectory();
             byte[] jsonBytes = SerializeUtf8();
-            File.WriteAllBytes(SettingsPath, jsonBytes);
+            File.WriteAllBytes(PortablePaths.SettingsPath, jsonBytes);
         }
         catch (Exception ex)
         {
-            AppDiagnostics.Log($"Failed to save settings to {SettingsPath}: {ex.Message}");
+            AppDiagnostics.Log($"Failed to save settings to {PortablePaths.SettingsPath}: {ex.Message}");
+        }
+    }
+
+    public static bool SetAutoStart(bool enabled, out string? error)
+    {
+        return StartupTask.SetEnabled(enabled, out error);
+    }
+
+    private static void CleanupLegacySettings()
+    {
+        try
+        {
+            File.Delete(LegacySettingsPath);
+            string? legacyDirectory = Path.GetDirectoryName(LegacySettingsPath);
+            if (!string.IsNullOrWhiteSpace(legacyDirectory))
+                PortablePaths.DeleteDirectoryIfEmpty(legacyDirectory);
+
+            AppDiagnostics.Log("Legacy AppData settings file removed after portable migration");
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.Log($"Legacy settings cleanup failed (non-fatal): {ex.Message}");
         }
     }
 
@@ -253,45 +293,5 @@ public sealed class Settings
 
         writer.Flush();
         return buffer.WrittenSpan.ToArray();
-    }
-
-    /// <summary>
-    /// Adds or removes a registry entry under HKCU\...\Run to launch PeekDesktop at login.
-    /// No admin rights required.
-    /// </summary>
-    public static void SetAutoStart(bool enabled)
-    {
-        try
-        {
-            const string keyPath = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
-            const string valueName = "PeekDesktop";
-
-            using var key = Registry.CurrentUser.OpenSubKey(keyPath, writable: true);
-            if (key == null)
-                return;
-
-            if (enabled)
-            {
-                string exePath = Environment.ProcessPath ?? "";
-                if (string.IsNullOrWhiteSpace(exePath))
-                {
-                    AppDiagnostics.Log("Auto-start registry update skipped: process path is unavailable.");
-                    return;
-                }
-
-                string startupCommand = $"\"{exePath}\"";
-                string? currentValue = key.GetValue(valueName) as string;
-                if (!string.Equals(currentValue, startupCommand, StringComparison.OrdinalIgnoreCase))
-                    key.SetValue(valueName, startupCommand);
-            }
-            else
-            {
-                key.DeleteValue(valueName, throwOnMissingValue: false);
-            }
-        }
-        catch (Exception ex)
-        {
-            AppDiagnostics.Log($"Failed to update auto-start registry entry: {ex.Message}");
-        }
     }
 }
