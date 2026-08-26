@@ -180,7 +180,7 @@ public sealed class DesktopPeek : IDisposable
             RestoreWindows();
     }
 
-    private void OnDesktopClicked(object? sender, PeekSurfaceClickEventArgs e)
+    private void OnDesktopClicked(object? sender, EventArgs e)
     {
         if (!_peekOnDesktopClick)
         {
@@ -188,12 +188,12 @@ public sealed class DesktopPeek : IDisposable
             return;
         }
 
-        HandlePeekSurfaceClicked("Desktop", e.Monitor);
+        HandlePeekSurfaceClicked("Desktop", _mouseHook.LastPeekSurfaceMonitor);
     }
 
-    private void OnTaskbarClicked(object? sender, PeekSurfaceClickEventArgs e)
+    private void OnTaskbarClicked(object? sender, EventArgs e)
     {
-        HandlePeekSurfaceClicked("Taskbar", e.Monitor);
+        HandlePeekSurfaceClicked("Taskbar", _mouseHook.LastPeekSurfaceMonitor);
     }
 
     private void HandlePeekSurfaceClicked(string source, IntPtr clickedMonitor)
