@@ -14,7 +14,7 @@ internal sealed class NativeSettingsWindow : IDisposable
 {
     private const string ClassName = "PeekDesktop_NativeSettings";
     private const int LogicalClientWidth = 520;
-    private const int LogicalClientHeight = 610;
+    private const int LogicalClientHeight = 650;
 
     private const uint WM_PAINT = 0x000F;
     private const uint WM_CLOSE = 0x0010;
@@ -24,13 +24,13 @@ internal sealed class NativeSettingsWindow : IDisposable
     private const uint WM_LBUTTONUP = 0x0202;
     private const uint WM_ERASEBKGND = 0x0014;
     private const uint WM_DPICHANGED = 0x02E0;
+    private const uint WM_SETICON = 0x0080;
 
+    private const int ICON_SMALL = 0;
+    private const int ICON_BIG = 1;
     private const int WS_CAPTION = 0x00C00000;
     private const int WS_SYSMENU = 0x00080000;
-    private const int WS_MINIMIZEBOX = 0x00020000;
-    private const int WS_THICKFRAME = 0x00040000;
-    private const int WS_VISIBLE = 0x10000000;
-    private const int WindowStyle = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_THICKFRAME;
+    private const int WindowStyle = WS_CAPTION | WS_SYSMENU;
 
     private const int SWP_NOZORDER = 0x0004;
     private const int SWP_NOACTIVATE = 0x0010;
@@ -50,6 +50,7 @@ internal sealed class NativeSettingsWindow : IDisposable
     private const uint DT_RIGHT = 0x00000002;
     private const int PS_SOLID = 0;
     private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    private const uint SRCCOPY = 0x00CC0020;
 
     private static readonly int[] DurationPresets = [200, 260, 320, 400, 500];
     private static readonly int[] FrameRatePresets = [30, 60, 90, 120];
@@ -64,6 +65,7 @@ internal sealed class NativeSettingsWindow : IDisposable
     private IntPtr _hwnd;
     private IntPtr _font;
     private IntPtr _headerFont;
+    private IntPtr _windowIcon;
     private bool _disposed;
     private RowId _hotRow = RowId.None;
     private bool _trackingMouse;
@@ -142,7 +144,7 @@ internal sealed class NativeSettingsWindow : IDisposable
         NativeMethods.GetMonitorInfoW(monitor, ref monitorInfo);
 
         const int provisionalWidth = 560;
-        const int provisionalHeight = 680;
+        const int provisionalHeight = 700;
         int x = monitorInfo.rcWork.Left + Math.Max(0, (monitorInfo.rcWork.Right - monitorInfo.rcWork.Left - provisionalWidth) / 2);
         int y = monitorInfo.rcWork.Top + Math.Max(0, (monitorInfo.rcWork.Bottom - monitorInfo.rcWork.Top - provisionalHeight) / 2);
 
@@ -164,6 +166,13 @@ internal sealed class NativeSettingsWindow : IDisposable
         {
             s_instance = null;
             throw new InvalidOperationException($"Failed to create settings window: {Marshal.GetLastWin32Error()}");
+        }
+
+        _windowIcon = Win32Icon.CreateTrayIcon();
+        if (_windowIcon != IntPtr.Zero)
+        {
+            SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_BIG, _windowIcon);
+            SendMessageW(_hwnd, WM_SETICON, (IntPtr)ICON_SMALL, _windowIcon);
         }
 
         ApplyThemeToWindow(_hwnd);
@@ -229,8 +238,9 @@ internal sealed class NativeSettingsWindow : IDisposable
                 _trackingMouse = false;
                 if (_hotRow != RowId.None)
                 {
+                    RowId oldHot = _hotRow;
                     _hotRow = RowId.None;
-                    InvalidateRect(hwnd, IntPtr.Zero, false);
+                    InvalidateRow(hwnd, oldHot);
                 }
                 return IntPtr.Zero;
 
@@ -248,6 +258,7 @@ internal sealed class NativeSettingsWindow : IDisposable
 
             case WM_DESTROY:
                 DeleteFonts();
+                DeleteWindowIcon();
                 _hwnd = IntPtr.Zero;
                 _hotRow = RowId.None;
                 _trackingMouse = false;
@@ -264,92 +275,52 @@ internal sealed class NativeSettingsWindow : IDisposable
         BeginPaint(hwnd, out PAINTSTRUCT ps);
         try
         {
-            bool dark = IsDarkTheme();
-            uint background = dark ? Rgb(32, 32, 32) : Rgb(250, 250, 250);
-            uint hover = dark ? Rgb(49, 49, 49) : Rgb(235, 235, 235);
-            uint text = dark ? Rgb(245, 245, 245) : Rgb(32, 32, 32);
-            uint secondary = dark ? Rgb(184, 184, 184) : Rgb(92, 92, 92);
-            uint disabled = dark ? Rgb(112, 112, 112) : Rgb(145, 145, 145);
-            uint separator = dark ? Rgb(62, 62, 62) : Rgb(220, 220, 220);
+            if (!GetClientRect(hwnd, out NativeMethods.RECT clientRect))
+                return;
 
-            IntPtr backgroundBrush = CreateSolidBrush(background);
-            FillRect(ps.hdc, ref ps.rcPaint, backgroundBrush);
-            DeleteObject(backgroundBrush);
+            int width = clientRect.Right - clientRect.Left;
+            int height = clientRect.Bottom - clientRect.Top;
+            if (width <= 0 || height <= 0)
+                return;
 
-            SetBkMode(ps.hdc, TRANSPARENT);
-            List<VisualRow> rows = BuildRows(hwnd);
+            IntPtr memoryDc = CreateCompatibleDC(ps.hdc);
+            if (memoryDc == IntPtr.Zero)
+                return;
 
-            foreach (VisualRow row in rows)
+            IntPtr bitmap = CreateCompatibleBitmap(ps.hdc, width, height);
+            if (bitmap == IntPtr.Zero)
             {
-                if (row.Kind == RowKind.Header)
-                {
-                    SelectObject(ps.hdc, _headerFont);
-                    SetTextColor(ps.hdc, secondary);
-                    var headerRect = row.Rect;
-                    DrawTextW(ps.hdc, row.Label, row.Label.Length, ref headerRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-                    continue;
-                }
-
-                bool hoverable = row.Enabled && row.Kind is RowKind.Toggle or RowKind.Choice or RowKind.Action;
-                if (hoverable && row.Id == _hotRow)
-                {
-                    IntPtr hoverBrush = CreateSolidBrush(hover);
-                    var hotRect = row.Rect;
-                    FillRect(ps.hdc, ref hotRect, hoverBrush);
-                    DeleteObject(hoverBrush);
-                }
-
-                SelectObject(ps.hdc, _font);
-                SetTextColor(ps.hdc, row.Enabled ? text : disabled);
-
-                int leftPadding = Scale(16, hwnd);
-                int checkWidth = Scale(24, hwnd);
-                int rightPadding = Scale(16, hwnd);
-
-                if (row.Kind == RowKind.Toggle)
-                {
-                    var checkRect = row.Rect;
-                    checkRect.Left += leftPadding;
-                    checkRect.Right = checkRect.Left + checkWidth;
-                    if (row.Checked)
-                        DrawTextW(ps.hdc, "✓", 1, ref checkRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-                }
-
-                var labelRect = row.Rect;
-                labelRect.Left += leftPadding + (row.Kind == RowKind.Toggle ? checkWidth : 0);
-                labelRect.Right -= rightPadding;
-                DrawTextW(ps.hdc, row.Label, row.Label.Length, ref labelRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-
-                if (!string.IsNullOrEmpty(row.Value))
-                {
-                    string value = row.Kind == RowKind.Choice ? row.Value + "   ›" : row.Value;
-                    SetTextColor(ps.hdc, row.Enabled ? secondary : disabled);
-                    var valueRect = row.Rect;
-                    valueRect.Left += Scale(260, hwnd);
-                    valueRect.Right -= rightPadding;
-                    DrawTextW(ps.hdc, value, value.Length, ref valueRect, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
-                }
-
-                if (row.Kind == RowKind.Info)
-                {
-                    SetTextColor(ps.hdc, secondary);
-                }
+                DeleteDC(memoryDc);
+                return;
             }
 
-            IntPtr pen = CreatePen(PS_SOLID, 1, separator);
-            IntPtr oldPen = SelectObject(ps.hdc, pen);
-            int margin = Scale(12, hwnd);
-            foreach (VisualRow row in rows)
+            IntPtr oldBitmap = SelectObject(memoryDc, bitmap);
+            try
             {
-                if (row.Kind == RowKind.Header && row.Id != RowId.HeaderGeneral)
+                DrawSurface(memoryDc, hwnd, clientRect);
+
+                int paintWidth = ps.rcPaint.Right - ps.rcPaint.Left;
+                int paintHeight = ps.rcPaint.Bottom - ps.rcPaint.Top;
+                if (paintWidth > 0 && paintHeight > 0)
                 {
-                    int y = row.Rect.Top - Scale(4, hwnd);
-                    MoveToEx(ps.hdc, margin, y, IntPtr.Zero);
-                    LineTo(ps.hdc, GetClientWidth(hwnd) - margin, y);
+                    BitBlt(
+                        ps.hdc,
+                        ps.rcPaint.Left,
+                        ps.rcPaint.Top,
+                        paintWidth,
+                        paintHeight,
+                        memoryDc,
+                        ps.rcPaint.Left,
+                        ps.rcPaint.Top,
+                        SRCCOPY);
                 }
             }
-            SelectObject(ps.hdc, oldPen);
-            DeleteObject(pen);
+            finally
+            {
+                SelectObject(memoryDc, oldBitmap);
+                DeleteObject(bitmap);
+                DeleteDC(memoryDc);
+            }
         }
         finally
         {
@@ -357,12 +328,99 @@ internal sealed class NativeSettingsWindow : IDisposable
         }
     }
 
+    private void DrawSurface(IntPtr hdc, IntPtr hwnd, NativeMethods.RECT clientRect)
+    {
+        bool dark = IsDarkTheme();
+        uint background = dark ? Rgb(32, 32, 32) : Rgb(250, 250, 250);
+        uint hover = dark ? Rgb(49, 49, 49) : Rgb(235, 235, 235);
+        uint text = dark ? Rgb(245, 245, 245) : Rgb(32, 32, 32);
+        uint secondary = dark ? Rgb(184, 184, 184) : Rgb(92, 92, 92);
+        uint disabled = dark ? Rgb(112, 112, 112) : Rgb(145, 145, 145);
+        uint separator = dark ? Rgb(62, 62, 62) : Rgb(220, 220, 220);
+
+        IntPtr backgroundBrush = CreateSolidBrush(background);
+        var fullRect = clientRect;
+        FillRect(hdc, ref fullRect, backgroundBrush);
+        DeleteObject(backgroundBrush);
+
+        SetBkMode(hdc, TRANSPARENT);
+        List<VisualRow> rows = BuildRows(hwnd);
+
+        foreach (VisualRow row in rows)
+        {
+            if (row.Kind == RowKind.Header)
+            {
+                SelectObject(hdc, _headerFont);
+                SetTextColor(hdc, secondary);
+                var headerRect = row.Rect;
+                DrawTextW(hdc, row.Label, row.Label.Length, ref headerRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+                continue;
+            }
+
+            bool hoverable = row.Enabled && row.Kind is RowKind.Toggle or RowKind.Choice or RowKind.Action;
+            if (hoverable && row.Id == _hotRow)
+            {
+                IntPtr hoverBrush = CreateSolidBrush(hover);
+                var hotRect = row.Rect;
+                FillRect(hdc, ref hotRect, hoverBrush);
+                DeleteObject(hoverBrush);
+            }
+
+            SelectObject(hdc, _font);
+            SetTextColor(hdc, row.Enabled ? text : disabled);
+
+            int leftPadding = Scale(16, hwnd);
+            int checkWidth = Scale(24, hwnd);
+            int rightPadding = Scale(16, hwnd);
+
+            if (row.Kind == RowKind.Toggle)
+            {
+                var checkRect = row.Rect;
+                checkRect.Left += leftPadding;
+                checkRect.Right = checkRect.Left + checkWidth;
+                if (row.Checked)
+                    DrawTextW(hdc, "✓", 1, ref checkRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+            }
+
+            var labelRect = row.Rect;
+            labelRect.Left += leftPadding + (row.Kind == RowKind.Toggle ? checkWidth : 0);
+            labelRect.Right -= rightPadding;
+            DrawTextW(hdc, row.Label, row.Label.Length, ref labelRect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+            if (!string.IsNullOrEmpty(row.Value))
+            {
+                string value = row.Kind == RowKind.Choice ? row.Value + "   ›" : row.Value;
+                SetTextColor(hdc, row.Enabled ? secondary : disabled);
+                var valueRect = row.Rect;
+                valueRect.Left += Scale(260, hwnd);
+                valueRect.Right -= rightPadding;
+                DrawTextW(hdc, value, value.Length, ref valueRect, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+            }
+        }
+
+        IntPtr pen = CreatePen(PS_SOLID, 1, separator);
+        IntPtr oldPen = SelectObject(hdc, pen);
+        int margin = Scale(12, hwnd);
+        foreach (VisualRow row in rows)
+        {
+            if (row.Kind == RowKind.Header && row.Id != RowId.HeaderGeneral)
+            {
+                int y = row.Rect.Top - Scale(3, hwnd);
+                MoveToEx(hdc, margin, y, IntPtr.Zero);
+                LineTo(hdc, GetClientWidth(hwnd) - margin, y);
+            }
+        }
+        SelectObject(hdc, oldPen);
+        DeleteObject(pen);
+    }
+
     private List<VisualRow> BuildRows(IntPtr hwnd)
     {
         int width = GetClientWidth(hwnd);
-        int y = Scale(14, hwnd);
-        int headerHeight = Scale(28, hwnd);
-        int rowHeight = Scale(31, hwnd);
+        int y = Scale(10, hwnd);
+        int headerHeight = Scale(26, hwnd);
+        int rowHeight = Scale(29, hwnd);
+        int groupGap = Scale(6, hwnd);
         int outer = Scale(8, hwnd);
 
         var rows = new List<VisualRow>(24);
@@ -386,7 +444,7 @@ internal sealed class NativeSettingsWindow : IDisposable
         Row(RowId.StartWithWindows, RowKind.Toggle, "Start with Windows", check: _settings.StartWithWindows);
         Row(RowId.RequireDoubleClick, RowKind.Toggle, "Require Double-Click", check: _settings.RequireDoubleClick);
 
-        y += Scale(8, hwnd);
+        y += groupGap;
         Header(RowId.HeaderPeekBehavior, "Peek Behavior");
         Row(RowId.PeekOnDesktopClick, RowKind.Toggle, "Peek on Desktop Click", check: _settings.PeekOnDesktopClick);
         Row(RowId.PeekOnTaskbarClick, RowKind.Toggle, "Peek on Taskbar Click", check: _settings.PeekOnTaskbarClick);
@@ -394,7 +452,7 @@ internal sealed class NativeSettingsWindow : IDisposable
         Row(RowId.PauseWhileFullscreen, RowKind.Toggle, "Pause While Gaming / Full-Screen", check: _settings.PauseWhileFullscreenAppActive);
         Row(RowId.PeekStyle, RowKind.Choice, "Peek Style", GetPeekModeName(_settings.PeekMode));
 
-        y += Scale(8, hwnd);
+        y += groupGap;
         Header(RowId.HeaderFlyAway, "Fly Away");
         Row(RowId.OnlyClickedMonitor, RowKind.Toggle, "Only Clicked Monitor", check: _settings.FlyAwayOnlyClickedMonitor);
         Row(RowId.Duration, RowKind.Choice, "Animation Duration", $"{_settings.FlyAwayAnimationDurationMs} ms");
@@ -402,12 +460,12 @@ internal sealed class NativeSettingsWindow : IDisposable
         int estimated = Math.Max(1, (int)Math.Ceiling(_settings.FlyAwayAnimationDurationMs * _settings.FlyAwayAnimationFrameRate / 1000d));
         Row(RowId.EstimatedFrames, RowKind.Info, "Estimated Frames", $"~{estimated} per direction", enabled: false);
 
-        y += Scale(8, hwnd);
+        y += groupGap;
         Header(RowId.HeaderUpdates, "Updates");
         Row(RowId.AutoUpdates, RowKind.Disabled, "Auto-Check for Updates", "Unavailable", enabled: false);
         Row(RowId.CheckUpdates, RowKind.Disabled, "Check for Updates", "Unavailable", enabled: false);
 
-        y += Scale(8, hwnd);
+        y += groupGap;
         Header(RowId.HeaderAbout, "About");
         Row(RowId.Version, RowKind.Info, "Version", TrayIcon.GetDisplayVersion(), enabled: false);
         Row(RowId.About, RowKind.Action, "About PeekDesktop");
@@ -422,8 +480,10 @@ internal sealed class NativeSettingsWindow : IDisposable
         RowId newHot = HitTest(hwnd, x, y, requireEnabled: true);
         if (newHot != _hotRow)
         {
+            RowId oldHot = _hotRow;
             _hotRow = newHot;
-            InvalidateRect(hwnd, IntPtr.Zero, false);
+            InvalidateRow(hwnd, oldHot);
+            InvalidateRow(hwnd, newHot);
         }
 
         if (!_trackingMouse)
@@ -435,6 +495,22 @@ internal sealed class NativeSettingsWindow : IDisposable
                 hwndTrack = hwnd
             };
             _trackingMouse = TrackMouseEvent(ref tme);
+        }
+    }
+
+    private void InvalidateRow(IntPtr hwnd, RowId id)
+    {
+        if (id == RowId.None)
+            return;
+
+        foreach (VisualRow row in BuildRows(hwnd))
+        {
+            if (row.Id != id)
+                continue;
+
+            var rect = row.Rect;
+            InvalidateRectArea(hwnd, ref rect, false);
+            return;
         }
     }
 
@@ -636,6 +712,15 @@ internal sealed class NativeSettingsWindow : IDisposable
         if (_headerFont != IntPtr.Zero) { DeleteObject(_headerFont); _headerFont = IntPtr.Zero; }
     }
 
+    private void DeleteWindowIcon()
+    {
+        if (_windowIcon == IntPtr.Zero)
+            return;
+
+        DestroyIcon(_windowIcon);
+        _windowIcon = IntPtr.Zero;
+    }
+
     private void HandleDpiChanged(IntPtr hwnd, IntPtr wParam, IntPtr lParam)
     {
         uint dpi = (uint)(wParam.ToInt64() & 0xFFFF);
@@ -644,7 +729,8 @@ internal sealed class NativeSettingsWindow : IDisposable
         GetOuterSizeForClientArea(dpi, out int outerWidth, out int outerHeight);
         SetWindowPos(hwnd, IntPtr.Zero, suggested.Left, suggested.Top, outerWidth, outerHeight, SWP_NOZORDER | SWP_NOACTIVATE);
         ApplyFonts(dpi);
-        InvalidateRect(hwnd, IntPtr.Zero, true);
+        ApplyThemeToWindow(hwnd);
+        InvalidateRect(hwnd, IntPtr.Zero, false);
     }
 
     private static void ResizeAndCenterForClientArea(IntPtr hwnd, IntPtr monitor)
@@ -722,6 +808,7 @@ internal sealed class NativeSettingsWindow : IDisposable
         if (_hwnd != IntPtr.Zero && NativeMethods.IsWindow(_hwnd))
             DestroyWindow(_hwnd);
         DeleteFonts();
+        DeleteWindowIcon();
         if (ReferenceEquals(s_instance, this))
             s_instance = null;
     }
@@ -778,6 +865,10 @@ internal sealed class NativeSettingsWindow : IDisposable
     private static extern bool DestroyWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    [DllImport("user32.dll")]
     private static extern IntPtr LoadCursorW(IntPtr hInstance, IntPtr lpCursorName);
 
     [DllImport("user32.dll")]
@@ -803,6 +894,10 @@ internal sealed class NativeSettingsWindow : IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
 
+    [DllImport("user32.dll", EntryPoint = "InvalidateRect")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool InvalidateRectArea(IntPtr hWnd, ref NativeMethods.RECT lpRect, bool bErase);
+
     [DllImport("user32.dll")]
     private static extern IntPtr BeginPaint(IntPtr hWnd, out PAINTSTRUCT lpPaint);
 
@@ -812,6 +907,9 @@ internal sealed class NativeSettingsWindow : IDisposable
 
     [DllImport("user32.dll")]
     private static extern int FillRect(IntPtr hDC, ref NativeMethods.RECT lprc, IntPtr hbr);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessageW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("gdi32.dll")]
     private static extern IntPtr CreateSolidBrush(uint colorRef);
@@ -847,6 +945,20 @@ internal sealed class NativeSettingsWindow : IDisposable
     [DllImport("gdi32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool LineTo(IntPtr hdc, int x, int y);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool BitBlt(IntPtr hdcDest, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, uint rop);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
