@@ -13,6 +13,7 @@ namespace PeekDesktop;
 public sealed class WindowTracker
 {
     private const int OffscreenMargin = 64;
+    private const uint SwpNoSize = 0x0001;
 
     private readonly List<WindowInfo> _savedWindows = new();
     private int _flyAwayAnimationDurationMs = Settings.DefaultFlyAwayAnimationDurationMs;
@@ -318,7 +319,8 @@ public sealed class WindowTracker
         if (windows.Count == 0)
             return;
 
-        const uint flags = NativeMethods.SWP_NOACTIVATE
+        const uint flags = SwpNoSize
+                         | NativeMethods.SWP_NOACTIVATE
                          | NativeMethods.SWP_NOZORDER
                          | NativeMethods.SWP_NOOWNERZORDER
                          | NativeMethods.SWP_NOSENDCHANGING
@@ -344,16 +346,14 @@ public sealed class WindowTracker
                     continue;
 
                 NativeMethods.RECT frame = LerpRect(window.StartBounds, window.EndBounds, progress);
-                int width = Math.Max(1, frame.Right - frame.Left);
-                int height = Math.Max(1, frame.Bottom - frame.Top);
 
                 NativeMethods.SetWindowPos(
                     window.Handle,
                     IntPtr.Zero,
                     frame.Left,
                     frame.Top,
-                    width,
-                    height,
+                    0,
+                    0,
                     flags);
             }
 
