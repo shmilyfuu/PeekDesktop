@@ -148,6 +148,8 @@ public sealed class MouseHook : IDisposable
         }
     }
 
+    internal IntPtr LastPeekSurfaceMonitor { get; private set; }
+
     /// <summary>
     /// Raised (on the UI thread) when a left-click on empty desktop wallpaper is detected.
     /// </summary>
@@ -191,6 +193,7 @@ public sealed class MouseHook : IDisposable
             AppDiagnostics.Log($"Mouse hook uninstalled: 0x{_hookId.ToInt64():X}");
             _hookId = IntPtr.Zero;
             _clickTracker.Reset();
+            LastPeekSurfaceMonitor = IntPtr.Zero;
         }
     }
 
@@ -286,6 +289,7 @@ public sealed class MouseHook : IDisposable
         switch (clickTarget)
         {
             case DesktopClickTarget.DesktopBackground:
+                LastPeekSurfaceMonitor = hMonitor;
                 DesktopClicked?.Invoke(this, EventArgs.Empty);
                 break;
 
@@ -294,6 +298,7 @@ public sealed class MouseHook : IDisposable
                 break;
 
             case DesktopClickTarget.TaskbarBackground:
+                LastPeekSurfaceMonitor = hMonitor;
                 TaskbarClicked?.Invoke(this, EventArgs.Empty);
                 break;
         }

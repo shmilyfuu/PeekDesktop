@@ -1,0 +1,47 @@
+name: Test Build
+
+on:
+  push:
+    branches:
+      - feature/native-settings
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-win-x64:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore src/PeekDesktop/PeekDesktop.csproj
+
+      - name: Publish win-x64 NativeAOT test build
+        run: >-
+          dotnet publish src/PeekDesktop/PeekDesktop.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          --no-restore
+          --nologo
+          /p:DebugType=None
+          /p:DebugSymbols=false
+          -o artifacts/win-x64
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: PeekDesktop-test-win-x64
+          path: artifacts/win-x64/PeekDesktop.exe
+          if-no-files-found: error
+          retention-days: 14

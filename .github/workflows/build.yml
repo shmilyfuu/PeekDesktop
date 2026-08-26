@@ -4,249 +4,174 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
-      allow_unsigned:
-        description: Allow unsigned artifacts for a manual test build
+      version:
+        description: Release version without the leading v
         required: false
-        default: false
-        type: boolean
+        default: '1.0.0'
+        type: string
 
 permissions:
   contents: write
-  id-token: write
 
 env:
-  ALLOW_UNSIGNED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.allow_unsigned == 'true' }}
-  HAS_AZURE_SIGNING: ${{ secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_TENANT_ID != '' }}
-  TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT || 'https://wus2.codesigning.azure.net/' }}
-  TRUSTED_SIGNING_ACCOUNT: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT || 'hanselman' }}
-  TRUSTED_SIGNING_PROFILE: ${{ vars.AZURE_CERTIFICATE_PROFILE_NAME || 'WindowsEdgeLight' }}
+  ONE_TIME_MAIN_RELEASE_VERSION: '1.0.0'
 
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      with:
-        fetch-depth: 0
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
-      with:
-        dotnet-version: '10.0.x'
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '10.0.x'
 
-    - name: Require signing configuration
-      if: env.HAS_AZURE_SIGNING != 'true' && env.ALLOW_UNSIGNED != 'true'
-      shell: pwsh
-      run: |
-        throw "Trusted Signing is not configured. Set the Azure signing secrets/variables, or use workflow_dispatch with allow_unsigned=true for a one-off dry run."
+      - name: Restore dependencies
+        run: dotnet restore src/PeekDesktop/PeekDesktop.csproj
 
-    - name: Restore dependencies
-      run: dotnet restore src/PeekDesktop/PeekDesktop.csproj
+      - name: Run interop safety harness
+        run: dotnet run --project src/PeekDesktop.InteropHarness/PeekDesktop.InteropHarness.csproj -- 10000
 
-    - name: Run interop safety harness
-      run: dotnet run --project src/PeekDesktop.InteropHarness/PeekDesktop.InteropHarness.csproj -- 10000
-
-    - name: Set version environment variables
-      shell: pwsh
-      env:
-        REF_TYPE: ${{ github.ref_type }}
-        REF_NAME: ${{ github.ref_name }}
-        RUN_NUMBER: ${{ github.run_number }}
-      run: |
-        if ($env:REF_TYPE -eq 'tag') {
-          $version = $env:REF_NAME.TrimStart('v')
-        } else {
-          $version = "0.0.0-ci.$env:RUN_NUMBER"
-        }
-
-        $numericVersion = ($version -split '-', 2)[0]
-        $parts = $numericVersion.Split('.')
-        if ($parts.Length -lt 2) {
-          throw "Version '$version' is not in a supported format."
-        }
-
-        $major = [int]$parts[0]
-        $minor = [int]$parts[1]
-        $patch = if ($parts.Length -ge 3) { [int]$parts[2] } else { 0 }
-        $fullVersion = $version
-        $assemblyVersion = "$major.$minor.$patch.0"
-
-        Write-Host "Using semantic version: $version"
-        Write-Host "Using full version: $fullVersion"
-        Write-Host "Using assembly version: $assemblyVersion"
-
-        echo "VERSION=$version" >> $env:GITHUB_ENV
-        echo "FULLVERSION=$fullVersion" >> $env:GITHUB_ENV
-        echo "ASSEMBLY_VERSION=$assemblyVersion" >> $env:GITHUB_ENV
-
-    - name: Build x64
-      run: |
-        dotnet publish src/PeekDesktop/PeekDesktop.csproj `
-          -c Release `
-          -r win-x64 `
-          /p:PublishSingleFile=true `
-          /p:DebugType=None `
-          /p:DebugSymbols=false `
-          /p:Version=$env:VERSION `
-          /p:AssemblyVersion=$env:ASSEMBLY_VERSION `
-          /p:FileVersion=$env:ASSEMBLY_VERSION `
-          /p:AssemblyInformationalVersion=$env:FULLVERSION `
-          --self-contained
-
-    - name: Build ARM64
-      run: |
-        dotnet publish src/PeekDesktop/PeekDesktop.csproj `
-          -c Release `
-          -r win-arm64 `
-          /p:PublishSingleFile=true `
-          /p:DebugType=None `
-          /p:DebugSymbols=false `
-          /p:Version=$env:VERSION `
-          /p:AssemblyVersion=$env:ASSEMBLY_VERSION `
-          /p:FileVersion=$env:ASSEMBLY_VERSION `
-          /p:AssemblyInformationalVersion=$env:FULLVERSION `
-          --self-contained
-
-    - name: Azure Login
-      if: env.HAS_AZURE_SIGNING == 'true'
-      uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2
-      with:
-        creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID }}"}'
-
-    - name: Sign executables with Trusted Signing
-      if: env.HAS_AZURE_SIGNING == 'true'
-      uses: azure/trusted-signing-action@db7a3a6bd3912025c705162fb7475389f5b69ec6 # v1
-      with:
-        azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-        endpoint: ${{ env.TRUSTED_SIGNING_ENDPOINT }}
-        signing-account-name: ${{ env.TRUSTED_SIGNING_ACCOUNT }}
-        certificate-profile-name: ${{ env.TRUSTED_SIGNING_PROFILE }}
-        files: |
-          ${{ github.workspace }}\src\PeekDesktop\bin\Release\net10.0-windows\win-x64\publish\PeekDesktop.exe
-          ${{ github.workspace }}\src\PeekDesktop\bin\Release\net10.0-windows\win-arm64\publish\PeekDesktop.exe
-        file-digest: SHA256
-        timestamp-rfc3161: http://timestamp.acs.microsoft.com
-        timestamp-digest: SHA256
-
-    - name: Verify signatures
-      if: env.HAS_AZURE_SIGNING == 'true'
-      shell: pwsh
-      run: |
-        $files = @(
-          "src/PeekDesktop/bin/Release/net10.0-windows/win-x64/publish/PeekDesktop.exe",
-          "src/PeekDesktop/bin/Release/net10.0-windows/win-arm64/publish/PeekDesktop.exe"
-        )
-
-        foreach ($file in $files) {
-          $signature = Get-AuthenticodeSignature -FilePath $file
-          Write-Host "$file => $($signature.Status)"
-
-          if ($signature.Status -ne 'Valid') {
-            throw "Signature verification failed for $file"
+      - name: Set version environment variables
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          if ($env:REF_TYPE -eq 'tag') {
+            $version = $env:REF_NAME.TrimStart('v')
+          } elseif ($env:EVENT_NAME -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace($env:INPUT_VERSION)) {
+            $version = $env:INPUT_VERSION.TrimStart('v')
+          } else {
+            $version = $env:ONE_TIME_MAIN_RELEASE_VERSION
           }
-        }
 
-    - name: Signing skipped
-      if: env.HAS_AZURE_SIGNING != 'true' && env.ALLOW_UNSIGNED == 'true'
-      shell: pwsh
-      run: |
-        if ('${{ github.ref_type }}' -eq 'tag') {
-          throw "Unsigned builds are not allowed for tagged releases. Configure Azure Trusted Signing secrets first."
-        }
-        Write-Host "Trusted Signing is not configured for this repo yet; continuing only because this is not a tagged release."
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Version '$version' is not a supported semantic version."
+          }
 
-    - name: Prepare artifacts
-      shell: pwsh
-      run: |
-        New-Item -ItemType Directory -Path artifacts -Force
-        $version = $env:VERSION
+          $numericVersion = ($version -split '-', 2)[0]
+          $parts = $numericVersion.Split('.')
+          $major = [int]$parts[0]
+          $minor = [int]$parts[1]
+          $patch = [int]$parts[2]
+          $assemblyVersion = "$major.$minor.$patch.0"
 
-        New-Item -ItemType Directory -Path "temp-x64" -Force
-        Copy-Item "src/PeekDesktop/bin/Release/net10.0-windows/win-x64/publish/PeekDesktop.exe" -Destination "temp-x64/"
-        Copy-Item "README.md" -Destination "temp-x64/"
-        Compress-Archive -Path "temp-x64/*" -DestinationPath "artifacts/PeekDesktop-v$version-win-x64.zip"
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+          echo "FULLVERSION=$version" >> $env:GITHUB_ENV
+          echo "ASSEMBLY_VERSION=$assemblyVersion" >> $env:GITHUB_ENV
 
-        New-Item -ItemType Directory -Path "temp-arm64" -Force
-        Copy-Item "src/PeekDesktop/bin/Release/net10.0-windows/win-arm64/publish/PeekDesktop.exe" -Destination "temp-arm64/"
-        Copy-Item "README.md" -Destination "temp-arm64/"
-        Compress-Archive -Path "temp-arm64/*" -DestinationPath "artifacts/PeekDesktop-v$version-win-arm64.zip"
+      - name: Build x64
+        shell: pwsh
+        run: |
+          dotnet publish src/PeekDesktop/PeekDesktop.csproj `
+            -c Release `
+            -r win-x64 `
+            /p:PublishSingleFile=true `
+            /p:DebugType=None `
+            /p:DebugSymbols=false `
+            /p:Version=$env:VERSION `
+            /p:AssemblyVersion=$env:ASSEMBLY_VERSION `
+            /p:FileVersion=$env:ASSEMBLY_VERSION `
+            /p:AssemblyInformationalVersion=$env:FULLVERSION `
+            --self-contained
 
-        Remove-Item "temp-x64" -Recurse -Force
-        Remove-Item "temp-arm64" -Recurse -Force
+      - name: Build ARM64
+        shell: pwsh
+        run: |
+          dotnet publish src/PeekDesktop/PeekDesktop.csproj `
+            -c Release `
+            -r win-arm64 `
+            /p:PublishSingleFile=true `
+            /p:DebugType=None `
+            /p:DebugSymbols=false `
+            /p:Version=$env:VERSION `
+            /p:AssemblyVersion=$env:ASSEMBLY_VERSION `
+            /p:FileVersion=$env:ASSEMBLY_VERSION `
+            /p:AssemblyInformationalVersion=$env:FULLVERSION `
+            --self-contained
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-      with:
-        name: PeekDesktop-Release
-        path: artifacts/*.zip
+      - name: Prepare portable release archives
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          $version = $env:VERSION
 
-    - name: Create immutable-style release
-      if: startsWith(github.ref, 'refs/tags/')
-      shell: pwsh
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        $tag = "${{ github.ref_name }}"
-        $ownerRepo = "${{ github.repository }}"
-        $headSha = "${{ github.sha }}"
+          New-Item -ItemType Directory -Path temp-x64 -Force | Out-Null
+          Copy-Item "src/PeekDesktop/bin/Release/net10.0-windows/win-x64/publish/PeekDesktop.exe" "temp-x64/PeekDesktop.exe"
+          Compress-Archive -Path "temp-x64/PeekDesktop.exe" -DestinationPath "artifacts/PeekDesktop-v$version-win-x64.zip"
 
-        # Reject any attempt to mutate an existing published tag release.
-        gh release view $tag --repo $ownerRepo *> $null
-        if ($LASTEXITCODE -eq 0) {
-          throw "Release '$tag' already exists. Refusing to mutate published releases."
-        }
+          New-Item -ItemType Directory -Path temp-arm64 -Force | Out-Null
+          Copy-Item "src/PeekDesktop/bin/Release/net10.0-windows/win-arm64/publish/PeekDesktop.exe" "temp-arm64/PeekDesktop.exe"
+          Compress-Archive -Path "temp-arm64/PeekDesktop.exe" -DestinationPath "artifacts/PeekDesktop-v$version-win-arm64.zip"
 
-        # Ensure the pushed tag still points at the exact commit that triggered this run.
-        $tagSha = (git rev-list -n 1 $tag).Trim()
-        if ([string]::IsNullOrWhiteSpace($tagSha) -or ($tagSha -ne $headSha)) {
-          throw "Tag '$tag' points to '$tagSha' but workflow was triggered for '$headSha'. Aborting."
-        }
+          Remove-Item temp-x64 -Recurse -Force
+          Remove-Item temp-arm64 -Recurse -Force
 
-        $notes = @"
-        ## PeekDesktop $tag
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PeekDesktop-Release
+          path: artifacts/*.zip
+          if-no-files-found: error
 
-        **Click empty desktop wallpaper or empty taskbar space to peek at it — just like macOS Sonoma.**
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = if ('${{ github.ref_type }}' -eq 'tag') { '${{ github.ref_name }}' } else { "v$env:VERSION" }
+          $ownerRepo = '${{ github.repository }}'
+          $headSha = '${{ github.sha }}'
 
-        ### 📦 Downloads
+          gh release view $tag --repo $ownerRepo *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release '$tag' already exists; leaving it unchanged."
+            exit 0
+          }
 
-        | File | Platform |
-        |------|----------|
-        | `PeekDesktop-$tag-win-x64.zip` | Intel/AMD 64-bit Windows |
-        | `PeekDesktop-$tag-win-arm64.zip` | ARM64 Windows (Surface Pro X, etc.) |
+          $notes = @"
+          ## PeekDesktop $tag
 
-        **Self-contained single-file** - Extract and run, no .NET installation required.
+          Portable Windows build of PeekDesktop with the custom native settings interface.
 
-        ### 👀 How It Works
-        - Click empty wallpaper or empty taskbar area -> reveal the desktop
-        - Use tray options to enable desktop clicks, taskbar clicks, or taskbar-only activation
-        - Click or drag desktop icons without triggering peek
-        - Click any window, the taskbar, or the wallpaper again -> everything restores
-        - Includes Explorer Show Desktop by default plus optional experimental styles
-        - Check for updates -> opens the latest GitHub Release page
-        - Winget submission starts automatically after tagged releases; install with `winget install Hanselman.PeekDesktop` after the community manifest is accepted
-        "@
+          ### Highlights
+          - Fly Away can operate only on the clicked monitor.
+          - Configurable Fly Away animation duration and frame rate.
+          - Native single-window settings UI; left-click the tray icon to open it.
+          - Tray right-click menu contains only Settings and Exit.
+          - Portable data is stored under the Data folder beside PeekDesktop.exe.
+          - Start with Windows uses an elevated Task Scheduler entry and removes it when disabled.
+          - PeekDesktop always requests administrator privileges so it can manage elevated windows.
+          - Automatic update checking is temporarily disabled.
 
-        Set-Content -Path release-notes.md -Value $notes -Encoding UTF8
+          ### Downloads
+          - `PeekDesktop-v$env:VERSION-win-x64.zip` — Intel/AMD 64-bit Windows
+          - `PeekDesktop-v$env:VERSION-win-arm64.zip` — ARM64 Windows
 
-        gh release create $tag `
-          --repo $ownerRepo `
-          --verify-tag `
-          --generate-notes `
-          --notes-file release-notes.md `
-          artifacts/*.zip
+          Each ZIP contains only `PeekDesktop.exe`. No .NET installation is required. No PDB files are included.
 
-  winget-submit:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: read
-    uses: ./.github/workflows/winget-submit.yml
-    with:
-      tag: ${{ github.ref_name }}
-    secrets: inherit
+          Note: these builds are currently unsigned, so Windows may show an Unknown publisher/UAC warning.
+          "@
+
+          Set-Content release-notes.md $notes -Encoding UTF8
+
+          gh release create $tag `
+            --repo $ownerRepo `
+            --target $headSha `
+            --title "PeekDesktop $tag" `
+            --notes-file release-notes.md `
+            artifacts/*.zip

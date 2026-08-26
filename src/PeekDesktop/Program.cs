@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace PeekDesktop;
 
@@ -16,8 +15,6 @@ public static class Program
         bool isRestarting = args.Length > 0
             && args[0].Equals("--restarting", StringComparison.OrdinalIgnoreCase);
 
-        // Acquire single-instance mutex. If restarting after an update,
-        // retry for a few seconds while the old process exits.
         _mutex = new Mutex(true, @"Local\PeekDesktop_SingleInstance", out bool isNewInstance);
         if (!isNewInstance)
         {
@@ -44,19 +41,19 @@ public static class Program
             }
         }
 
-        // Cleanup after mutex so we don't race with an in-flight update
+        // Keep cleanup for any leftovers created by older versions. The current
+        // branch does not perform update checks or downloads.
         AppUpdater.CleanupPreviousUpdate();
 
         try
         {
             ConfigureTraceLogging();
+            CleanupLegacyDiagnostics();
             AppDiagnostics.Log("Program starting");
 
             using var messageLoop = new Win32MessageLoop();
             AppDiagnostics.Log("Message loop created");
 
-            // Defer initialization until the message loop is pumping so hooks
-            // and posted callbacks work correctly.
             messageLoop.PostDeferredAction(1, () =>
             {
                 try
@@ -90,71 +87,65 @@ public static class Program
 
     private static DesktopPeek? _desktopPeek;
     private static TrayIcon? _trayIcon;
-    private static AppUpdater? _appUpdater;
 
     private static void Initialize(Win32MessageLoop messageLoop)
     {
         var settings = Settings.Load();
-        Settings.SetAutoStart(settings.StartWithWindows);
+        if (!Settings.SetAutoStart(settings.StartWithWindows, out string? startupError)
+            && !string.IsNullOrWhiteSpace(startupError))
+        {
+            AppDiagnostics.Log($"Start with Windows synchronization failed: {startupError}");
+        }
+
         _desktopPeek = new DesktopPeek(settings, messageLoop.BeginInvoke);
         _desktopPeek.SetRestoreHiddenWindowsOnAppOpen(settings.RestoreHiddenWindowsOnAppOpen);
-        _appUpdater = new AppUpdater(messageLoop);
-
-        // Let the updater release the mutex before relaunching
-        AppUpdater.ReleaseMutex = () =>
-        {
-            try
-            {
-                _mutex?.ReleaseMutex();
-                _mutex?.Dispose();
-                _mutex = null;
-            }
-            catch { /* best effort */ }
-        };
-
-        _trayIcon = new TrayIcon(messageLoop, _desktopPeek, _appUpdater, settings, () => messageLoop.Quit());
+        _trayIcon = new TrayIcon(messageLoop, _desktopPeek, settings, () => messageLoop.Quit());
 
         if (settings.Enabled)
             _desktopPeek.Start();
 
-        if (settings.AutoCheckForUpdates)
-        {
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(2000);
-
-                if (_appUpdater is not null)
-                    await _appUpdater.CheckForUpdatesAsync(interactive: false);
-            });
-        }
+        AppDiagnostics.Log("Update checks are temporarily disabled for this fork");
     }
 
     private static void ConfigureTraceLogging()
     {
-        string logDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "PeekDesktop");
-
-        Directory.CreateDirectory(logDir);
-
-        string logPath = Path.Combine(logDir, "PeekDesktop.log");
+        PortablePaths.EnsureLogsDirectory();
         Trace.Listeners.Clear();
-        Trace.Listeners.Add(new TextWriterTraceListener(logPath));
+        Trace.Listeners.Add(new TextWriterTraceListener(PortablePaths.LogPath));
         Trace.AutoFlush = true;
+    }
+
+    private static void CleanupLegacyDiagnostics()
+    {
+        try
+        {
+            string legacyLogDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "PeekDesktop");
+
+            string legacyLogPath = Path.Combine(legacyLogDirectory, "PeekDesktop.log");
+            string legacyStartupErrorPath = Path.Combine(legacyLogDirectory, "startup-error.log");
+
+            if (File.Exists(legacyLogPath))
+                File.Delete(legacyLogPath);
+            if (File.Exists(legacyStartupErrorPath))
+                File.Delete(legacyStartupErrorPath);
+
+            PortablePaths.DeleteDirectoryIfEmpty(legacyLogDirectory);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.Log($"Legacy diagnostics cleanup failed (non-fatal): {ex.Message}");
+        }
     }
 
     private static void HandleFatalStartupError(string context, Exception ex)
     {
         try
         {
-            string logDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "PeekDesktop");
-            Directory.CreateDirectory(logDir);
-
-            string fatalPath = Path.Combine(logDir, "startup-error.log");
+            PortablePaths.EnsureLogsDirectory();
             File.AppendAllText(
-                fatalPath,
+                PortablePaths.StartupErrorLogPath,
                 $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {context}{Environment.NewLine}{ex}{Environment.NewLine}{Environment.NewLine}");
         }
         catch

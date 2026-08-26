@@ -156,6 +156,8 @@ internal sealed class AppUpdater
     /// </summary>
     private async Task DownloadAndInstallAsync()
     {
+        string? tempZipPath = null;
+
         try
         {
             if (_latestRelease is null)
@@ -174,13 +176,15 @@ internal sealed class AppUpdater
                 ?? throw new InvalidOperationException("Cannot determine exe directory.");
             string newExePath = Path.Combine(exeDir, "PeekDesktop.new.exe");
             string oldExePath = Path.Combine(exeDir, "PeekDesktop.old.exe");
-            string tempZipPath = Path.Combine(
-                Path.GetTempPath(),
+
+            PortablePaths.EnsureUpdateDirectory();
+            tempZipPath = Path.Combine(
+                PortablePaths.UpdateDirectory,
                 $"PeekDesktop-update-{Guid.NewGuid():N}.zip");
 
             try
             {
-                // Step 1: Download zip to %TEMP%
+                // Step 1: Download zip beside the portable executable under data\update.
                 await Task.Run(() =>
                     WinHttp.DownloadToFile(assetUrl, "PeekDesktop", tempZipPath, timeoutSeconds: 120));
                 AppDiagnostics.Log($"Downloaded update zip to: {tempZipPath}");
@@ -205,7 +209,7 @@ internal sealed class AppUpdater
                 {
                     throw new InvalidOperationException(
                         "PeekDesktop cannot update itself in this folder (permission denied).\n\n" +
-                        "Move PeekDesktop to a user-writable folder, or download the update manually.");
+                        "Move PeekDesktop to a writable folder, or download the update manually.");
                 }
 
                 // Step 5: Rename dance — swap the exe in place
@@ -215,9 +219,10 @@ internal sealed class AppUpdater
                 File.Move(newExePath, exePath);
                 AppDiagnostics.Log("Renamed new exe into place");
 
-                // Step 6: Clean up temp zip
+                // Step 6: Clean up portable update zip
                 try { File.Delete(tempZipPath); }
                 catch { /* best effort */ }
+                PortablePaths.DeleteDirectoryIfEmpty(PortablePaths.UpdateDirectory);
 
                 // Step 7: Relaunch — launch FIRST, then release mutex and exit
                 AppDiagnostics.Log("Update complete — relaunching PeekDesktop");
@@ -257,8 +262,9 @@ internal sealed class AppUpdater
                 // Clean up partial downloads
                 try { if (File.Exists(newExePath)) File.Delete(newExePath); }
                 catch { /* best effort */ }
-                try { if (File.Exists(tempZipPath)) File.Delete(tempZipPath); }
+                try { if (!string.IsNullOrEmpty(tempZipPath) && File.Exists(tempZipPath)) File.Delete(tempZipPath); }
                 catch { /* best effort */ }
+                PortablePaths.DeleteDirectoryIfEmpty(PortablePaths.UpdateDirectory);
 
                 throw;
             }
@@ -275,6 +281,13 @@ internal sealed class AppUpdater
         }
         finally
         {
+            if (!string.IsNullOrEmpty(tempZipPath))
+            {
+                try { if (File.Exists(tempZipPath)) File.Delete(tempZipPath); }
+                catch { /* best effort */ }
+            }
+
+            PortablePaths.DeleteDirectoryIfEmpty(PortablePaths.UpdateDirectory);
             Interlocked.Exchange(ref _isUpdating, 0);
         }
     }
@@ -337,25 +350,36 @@ internal sealed class AppUpdater
         try
         {
             string? exePath = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exePath))
-                return;
-
-            string exeDir = Path.GetDirectoryName(exePath) ?? string.Empty;
-            if (string.IsNullOrEmpty(exeDir))
-                return;
-
-            string oldExePath = Path.Combine(exeDir, "PeekDesktop.old.exe");
-            if (File.Exists(oldExePath))
+            if (!string.IsNullOrEmpty(exePath))
             {
-                File.Delete(oldExePath);
-                AppDiagnostics.Log("Cleaned up PeekDesktop.old.exe from previous update");
+                string exeDir = Path.GetDirectoryName(exePath) ?? string.Empty;
+                if (!string.IsNullOrEmpty(exeDir))
+                {
+                    string oldExePath = Path.Combine(exeDir, "PeekDesktop.old.exe");
+                    if (File.Exists(oldExePath))
+                    {
+                        File.Delete(oldExePath);
+                        AppDiagnostics.Log("Cleaned up PeekDesktop.old.exe from previous update");
+                    }
+
+                    string newExePath = Path.Combine(exeDir, "PeekDesktop.new.exe");
+                    if (File.Exists(newExePath))
+                    {
+                        File.Delete(newExePath);
+                        AppDiagnostics.Log("Cleaned up PeekDesktop.new.exe from previous update");
+                    }
+                }
             }
 
-            string newExePath = Path.Combine(exeDir, "PeekDesktop.new.exe");
-            if (File.Exists(newExePath))
+            if (Directory.Exists(PortablePaths.UpdateDirectory))
             {
-                File.Delete(newExePath);
-                AppDiagnostics.Log("Cleaned up PeekDesktop.new.exe from previous update");
+                foreach (string file in Directory.GetFiles(PortablePaths.UpdateDirectory, "PeekDesktop-update-*.zip"))
+                {
+                    try { File.Delete(file); }
+                    catch { /* best effort */ }
+                }
+
+                PortablePaths.DeleteDirectoryIfEmpty(PortablePaths.UpdateDirectory);
             }
         }
         catch (Exception ex)
@@ -363,11 +387,12 @@ internal sealed class AppUpdater
             AppDiagnostics.Log($"Cleanup of old update files failed (non-fatal): {ex.Message}");
         }
 
-        // Clean up any leftover temp zips
+        // One-time cleanup of update zips left by older non-portable builds.
+        // No new files are ever created in %TEMP% by this version.
         try
         {
-            string tempDir = Path.GetTempPath();
-            foreach (string file in Directory.GetFiles(tempDir, "PeekDesktop-update-*.zip"))
+            string legacyTempDir = Path.GetTempPath();
+            foreach (string file in Directory.GetFiles(legacyTempDir, "PeekDesktop-update-*.zip"))
             {
                 try { File.Delete(file); }
                 catch { /* best effort */ }

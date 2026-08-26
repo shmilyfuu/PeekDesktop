@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace PeekDesktop;
 
@@ -25,22 +28,27 @@ public sealed class DesktopPeek : IDisposable
         "gamebarpresencewriter"
     };
 
+    private readonly Action<Action> _beginInvoke;
     private readonly MouseHook _mouseHook;
     private readonly FocusWatcher _focusWatcher = new();
     private readonly WindowTracker _windowTracker = new();
     private readonly List<IntPtr> _deferredTeamsRestoreHandles = new();
 
+    private CancellationTokenSource? _transitionCancellation;
+    private Task? _transitionTask;
     private bool _isPeeking;
-    private bool _isTransitioning; // suppresses events during minimize/restore
+    private bool _isTransitioning; // suppresses events while an effect is entering/leaving peek state
     private bool _nativeShellToggled;
     private bool _pauseWhileFullscreenAppActive;
     private bool _restoreHiddenWindowsOnAppOpen;
     private bool _peekOnDesktopClick;
+    private bool _flyAwayOnlyClickedMonitor;
     private bool _isSuppressedForGaming;
     private long _ignoreFocusUntil;
     private long _ignoreRestoreClickUntil;
     private string _gameSuppressionReason = string.Empty;
     private PeekMode _activePeekMode = PeekMode.Minimize;
+    private IntPtr _peekMonitor = IntPtr.Zero;
 
     public bool IsEnabled { get; set; } = true;
     public bool IsPeeking => _isPeeking;
@@ -48,6 +56,8 @@ public sealed class DesktopPeek : IDisposable
 
     public DesktopPeek(Settings settings, Action<Action> beginInvoke)
     {
+        ArgumentNullException.ThrowIfNull(beginInvoke);
+        _beginInvoke = beginInvoke;
         _mouseHook = new MouseHook(beginInvoke)
         {
             RequireDoubleClick = settings.RequireDoubleClick,
@@ -58,6 +68,10 @@ public sealed class DesktopPeek : IDisposable
         _pauseWhileFullscreenAppActive = settings.PauseWhileFullscreenAppActive;
         _restoreHiddenWindowsOnAppOpen = settings.RestoreHiddenWindowsOnAppOpen;
         _peekOnDesktopClick = settings.PeekOnDesktopClick;
+        _flyAwayOnlyClickedMonitor = settings.FlyAwayOnlyClickedMonitor;
+        _windowTracker.ConfigureFlyAwayAnimation(
+            settings.FlyAwayAnimationDurationMs,
+            settings.FlyAwayAnimationFrameRate);
         AppDiagnostics.Log("DesktopPeek created");
         _mouseHook.DesktopClicked += OnDesktopClicked;
         _mouseHook.DesktopIconClicked += OnDesktopIconClicked;
@@ -110,6 +124,17 @@ public sealed class DesktopPeek : IDisposable
         AppDiagnostics.Log($"RestoreHiddenWindowsOnAppOpen set to {enabled}");
     }
 
+    public void SetFlyAwayOnlyClickedMonitor(bool enabled)
+    {
+        _flyAwayOnlyClickedMonitor = enabled;
+        AppDiagnostics.Log($"FlyAwayOnlyClickedMonitor set to {enabled}");
+    }
+
+    public void SetFlyAwayAnimation(int durationMs, int frameRate)
+    {
+        _windowTracker.ConfigureFlyAwayAnimation(durationMs, frameRate);
+    }
+
     public void SetPeekMode(PeekMode peekMode)
     {
         peekMode = NormalizePeekMode(peekMode);
@@ -132,8 +157,12 @@ public sealed class DesktopPeek : IDisposable
             return;
 
         AppDiagnostics.Log("Applying newly selected peek mode immediately");
-        RestoreWindows();
-        PeekDesktopNow();
+        IntPtr previousPeekMonitor = _peekMonitor;
+        RestoreWindows(() =>
+        {
+            _peekMonitor = previousPeekMonitor;
+            PeekDesktopNow();
+        });
     }
 
     private static PeekMode NormalizePeekMode(PeekMode peekMode)
@@ -153,12 +182,25 @@ public sealed class DesktopPeek : IDisposable
 
     public void Stop()
     {
-        AppDiagnostics.Log($"Stop requested. IsPeeking={_isPeeking}");
+        AppDiagnostics.Log($"Stop requested. IsPeeking={_isPeeking} Transitioning={_isTransitioning}");
         _mouseHook.Uninstall();
         _focusWatcher.Stop();
 
-        if (_isPeeking)
+        CancelActiveTransition();
+
+        if (_nativeShellToggled)
+        {
             RestoreWindows();
+            return;
+        }
+
+        if (_windowTracker.HasWindows)
+        {
+            AppDiagnostics.Log("Stop requested with captured windows; restoring immediately without animation");
+            _windowTracker.RestoreAll(PeekMode.Minimize);
+        }
+
+        CompleteRestoreState();
     }
 
     private void OnDesktopClicked(object? sender, EventArgs e)
@@ -169,15 +211,15 @@ public sealed class DesktopPeek : IDisposable
             return;
         }
 
-        HandlePeekSurfaceClicked("Desktop");
+        HandlePeekSurfaceClicked("Desktop", _mouseHook.LastPeekSurfaceMonitor);
     }
 
     private void OnTaskbarClicked(object? sender, EventArgs e)
     {
-        HandlePeekSurfaceClicked("Taskbar");
+        HandlePeekSurfaceClicked("Taskbar", _mouseHook.LastPeekSurfaceMonitor);
     }
 
-    private void HandlePeekSurfaceClicked(string source)
+    private void HandlePeekSurfaceClicked(string source, IntPtr clickedMonitor)
     {
         if (!IsEnabled || _isTransitioning)
         {
@@ -204,7 +246,8 @@ public sealed class DesktopPeek : IDisposable
             return;
         }
 
-        AppDiagnostics.Log($"{source} click accepted; entering peek mode");
+        _peekMonitor = clickedMonitor;
+        AppDiagnostics.Log($"{source} click accepted on monitor 0x{clickedMonitor.ToInt64():X}; entering peek mode");
         PeekDesktopNow();
     }
 
@@ -255,8 +298,7 @@ public sealed class DesktopPeek : IDisposable
             return;
         }
 
-        // Focus can churn briefly while windows are being minimized. Ignore those
-        // immediate foreground changes so the initial desktop click stays in peek mode.
+        // Ignore immediate foreground changes after a completed peek transition.
         if (Environment.TickCount64 < _ignoreFocusUntil)
         {
             AppDiagnostics.Log("Foreground change fell inside grace period; ignoring");
@@ -285,6 +327,7 @@ public sealed class DesktopPeek : IDisposable
                 _ignoreFocusUntil = 0;
                 _ignoreRestoreClickUntil = 0;
                 _activePeekMode = PeekMode;
+                _peekMonitor = IntPtr.Zero;
             }
 
             return;
@@ -302,9 +345,10 @@ public sealed class DesktopPeek : IDisposable
 
     private void PeekDesktopNow()
     {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         _isTransitioning = true;
         AppDiagnostics.Log("Beginning peek transition");
+
         try
         {
             _activePeekMode = PeekMode;
@@ -312,7 +356,7 @@ public sealed class DesktopPeek : IDisposable
 
             if (_activePeekMode == PeekMode.NativeShowDesktop)
             {
-                AppDiagnostics.Log($"Native toggle context: thread={Environment.CurrentManagedThreadId} apartment={System.Threading.Thread.CurrentThread.GetApartmentState()}");
+                AppDiagnostics.Log($"Native toggle context: thread={Environment.CurrentManagedThreadId} apartment={Thread.CurrentThread.GetApartmentState()}");
                 _windowTracker.CaptureWindows();
                 _deferredTeamsRestoreHandles.Clear();
                 IntPtr[] excludedTeamsOverlays = _windowTracker.RemoveSavedWindows(ShouldExcludeTeamsOverlayFromNativeSnapshot);
@@ -324,12 +368,8 @@ public sealed class DesktopPeek : IDisposable
                 if (NativeMethods.TryToggleDesktop())
                 {
                     _nativeShellToggled = true;
-                    _isPeeking = true;
-                    _ignoreFocusUntil = Environment.TickCount64 + PostPeekFocusGracePeriodMs;
-                    _ignoreRestoreClickUntil = Environment.TickCount64 + PostPeekRestoreClickGracePeriodMs;
-                    AppDiagnostics.Log($"Peek mode active; ignoring focus churn for {PostPeekFocusGracePeriodMs}ms");
-                    AppDiagnostics.Log($"Peek mode active; ignoring restore clicks for {PostPeekRestoreClickGracePeriodMs}ms");
-                    AppDiagnostics.Log("Native show desktop activated");
+                    ActivatePeekState();
+                    FinishSynchronousTransition(stopwatch, "PeekDesktopNow", "Native show desktop activated");
                     return;
                 }
 
@@ -337,41 +377,53 @@ public sealed class DesktopPeek : IDisposable
                 _activePeekMode = PeekMode.Minimize;
             }
 
-            _windowTracker.CaptureWindows();
+            IntPtr captureMonitor = _activePeekMode == PeekMode.FlyAway
+                && _flyAwayOnlyClickedMonitor
+                ? _peekMonitor
+                : IntPtr.Zero;
+            _windowTracker.CaptureWindows(captureMonitor);
 
-            if (_windowTracker.HasWindows)
+            if (!_windowTracker.HasWindows)
             {
-                AppDiagnostics.Log($"Captured {_windowTracker.SavedWindowCount} window(s); applying {_activePeekMode} effect");
-
-                if (_activePeekMode == PeekMode.FlyAway)
-                    _windowTracker.FlyAwayAll();
-                else
-                    _windowTracker.MinimizeAll();
-
-                _isPeeking = true;
-                _ignoreFocusUntil = Environment.TickCount64 + PostPeekFocusGracePeriodMs;
-                _ignoreRestoreClickUntil = Environment.TickCount64 + PostPeekRestoreClickGracePeriodMs;
-                AppDiagnostics.Log($"Peek mode active; ignoring focus churn for {PostPeekFocusGracePeriodMs}ms");
-                AppDiagnostics.Log($"Peek mode active; ignoring restore clicks for {PostPeekRestoreClickGracePeriodMs}ms");
+                _peekMonitor = IntPtr.Zero;
+                FinishSynchronousTransition(stopwatch, "PeekDesktopNow", "No restoreable windows were captured");
+                return;
             }
-            else
+
+            AppDiagnostics.Log($"Captured {_windowTracker.SavedWindowCount} window(s); applying {_activePeekMode} effect");
+
+            if (_activePeekMode == PeekMode.FlyAway)
             {
-                AppDiagnostics.Log("No restoreable windows were captured");
+                var cancellation = new CancellationTokenSource();
+                Task animationTask = _windowTracker.FlyAwayAllAsync(cancellation.Token);
+                BeginAsyncTransition(
+                    animationTask,
+                    cancellation,
+                    stopwatch,
+                    "PeekDesktopNow",
+                    "Peek transition complete",
+                    ActivatePeekState,
+                    "FlyAway peek animation");
+                return;
             }
+
+            _windowTracker.MinimizeAll();
+            ActivatePeekState();
+            FinishSynchronousTransition(stopwatch, "PeekDesktopNow", "Peek transition complete");
         }
-        finally
+        catch (Exception ex)
         {
-            _isTransitioning = false;
-            AppDiagnostics.Log("Peek transition complete");
-            AppDiagnostics.Metric($"PeekDesktopNow total: {stopwatch.ElapsedMilliseconds}ms");
+            RecoverFromAnimationFailure("Peek transition", ex);
+            FinishSynchronousTransition(stopwatch, "PeekDesktopNow", "Peek transition failed and was recovered");
         }
     }
 
-    private void RestoreWindows()
+    private void RestoreWindows(Action? onCompleted = null)
     {
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var stopwatch = Stopwatch.StartNew();
         _isTransitioning = true;
         AppDiagnostics.Log($"Beginning restore transition for {_windowTracker.SavedWindowCount} window(s)");
+
         try
         {
             _ignoreFocusUntil = 0;
@@ -403,21 +455,176 @@ public sealed class DesktopPeek : IDisposable
 
                 _deferredTeamsRestoreHandles.Clear();
                 _nativeShellToggled = false;
-            }
-            else
-            {
-                _windowTracker.RestoreAll(_activePeekMode);
+                CompleteRestoreState();
+                FinishSynchronousTransition(stopwatch, "RestoreWindows", "Restore complete; returned to idle");
+                onCompleted?.Invoke();
+                return;
             }
 
-            _isPeeking = false;
-            _activePeekMode = PeekMode;
-            AppDiagnostics.Log("Restore complete; returned to idle");
+            if (_activePeekMode == PeekMode.FlyAway && _windowTracker.HasWindows)
+            {
+                var cancellation = new CancellationTokenSource();
+                Task animationTask = _windowTracker.RestoreAllAsync(PeekMode.FlyAway, cancellation.Token);
+                BeginAsyncTransition(
+                    animationTask,
+                    cancellation,
+                    stopwatch,
+                    "RestoreWindows",
+                    "Restore transition complete",
+                    () =>
+                    {
+                        CompleteRestoreState();
+                        AppDiagnostics.Log("Restore complete; returned to idle");
+                        onCompleted?.Invoke();
+                    },
+                    "FlyAway restore animation");
+                return;
+            }
+
+            _windowTracker.RestoreAll(_activePeekMode);
+            CompleteRestoreState();
+            FinishSynchronousTransition(stopwatch, "RestoreWindows", "Restore complete; returned to idle");
+            onCompleted?.Invoke();
+        }
+        catch (Exception ex)
+        {
+            RecoverFromAnimationFailure("Restore transition", ex);
+            FinishSynchronousTransition(stopwatch, "RestoreWindows", "Restore transition failed and was recovered");
+        }
+    }
+
+    private void ActivatePeekState()
+    {
+        _isPeeking = true;
+        _ignoreFocusUntil = Environment.TickCount64 + PostPeekFocusGracePeriodMs;
+        _ignoreRestoreClickUntil = Environment.TickCount64 + PostPeekRestoreClickGracePeriodMs;
+        AppDiagnostics.Log($"Peek mode active; ignoring focus churn for {PostPeekFocusGracePeriodMs}ms");
+        AppDiagnostics.Log($"Peek mode active; ignoring restore clicks for {PostPeekRestoreClickGracePeriodMs}ms");
+    }
+
+    private void CompleteRestoreState()
+    {
+        _isPeeking = false;
+        _nativeShellToggled = false;
+        _ignoreFocusUntil = 0;
+        _ignoreRestoreClickUntil = 0;
+        _activePeekMode = PeekMode;
+        _peekMonitor = IntPtr.Zero;
+    }
+
+    private void FinishSynchronousTransition(Stopwatch stopwatch, string metricName, string logMessage)
+    {
+        _isTransitioning = false;
+        AppDiagnostics.Log(logMessage);
+        AppDiagnostics.Metric($"{metricName} total: {stopwatch.ElapsedMilliseconds}ms");
+    }
+
+    private void BeginAsyncTransition(
+        Task task,
+        CancellationTokenSource cancellation,
+        Stopwatch stopwatch,
+        string metricName,
+        string completionLog,
+        Action onSuccess,
+        string failureContext)
+    {
+        _transitionCancellation = cancellation;
+        _transitionTask = task;
+
+        task.ContinueWith(
+            completedTask =>
+            {
+                _beginInvoke(() =>
+                {
+                    if (!ReferenceEquals(_transitionTask, completedTask))
+                        return;
+
+                    _transitionTask = null;
+                    _transitionCancellation = null;
+                    cancellation.Dispose();
+                    _isTransitioning = false;
+
+                    if (completedTask.IsCanceled)
+                    {
+                        RecoverFromAnimationFailure(
+                            failureContext,
+                            new OperationCanceledException("Animation transition was cancelled unexpectedly."));
+                    }
+                    else if (completedTask.IsFaulted)
+                    {
+                        RecoverFromAnimationFailure(
+                            failureContext,
+                            completedTask.Exception?.GetBaseException()
+                                ?? new InvalidOperationException("Animation transition failed."));
+                    }
+                    else
+                    {
+                        onSuccess();
+                        AppDiagnostics.Log(completionLog);
+                    }
+
+                    AppDiagnostics.Metric($"{metricName} total: {stopwatch.ElapsedMilliseconds}ms");
+                });
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private void CancelActiveTransition()
+    {
+        Task? task = _transitionTask;
+        CancellationTokenSource? cancellation = _transitionCancellation;
+
+        if (task is null && cancellation is null)
+        {
+            _isTransitioning = false;
+            return;
+        }
+
+        // Invalidate the queued completion callback before cancellation so a late
+        // completion cannot overwrite the state established by Stop/Dispose.
+        _transitionTask = null;
+        _transitionCancellation = null;
+
+        try
+        {
+            cancellation?.Cancel();
+            if (task is not null && !task.IsCompleted && !task.Wait(500))
+                AppDiagnostics.Log("Timed out waiting for cancelled animation worker; forcing restore state");
+        }
+        catch (AggregateException)
+        {
+            // Cancellation is expected here.
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancellation is expected here.
         }
         finally
         {
+            cancellation?.Dispose();
             _isTransitioning = false;
-            AppDiagnostics.Metric($"RestoreWindows total: {stopwatch.ElapsedMilliseconds}ms");
         }
+    }
+
+    private void RecoverFromAnimationFailure(string context, Exception ex)
+    {
+        AppDiagnostics.Log($"{context} failed: {ex}");
+
+        try
+        {
+            if (_windowTracker.HasWindows)
+                _windowTracker.RestoreAll(PeekMode.Minimize);
+        }
+        catch (Exception restoreEx)
+        {
+            AppDiagnostics.Log($"Immediate recovery restore failed: {restoreEx}");
+            _windowTracker.ClearSavedWindows();
+        }
+
+        _deferredTeamsRestoreHandles.Clear();
+        CompleteRestoreState();
     }
 
     public void Dispose()

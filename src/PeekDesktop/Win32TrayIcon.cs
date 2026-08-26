@@ -20,9 +20,6 @@ internal sealed class Win32TrayIcon : IDisposable
         _hwnd = hwnd;
     }
 
-    /// <summary>
-    /// Adds the tray icon with the given tooltip and icon handle.
-    /// </summary>
     public bool Add(IntPtr hIcon, string tooltip)
     {
         if (_added)
@@ -45,13 +42,10 @@ internal sealed class Win32TrayIcon : IDisposable
             return false;
         }
 
-        // Request version 4 behavior in a separate call
         var versionNid = MakeNid();
         versionNid.uVersion = NOTIFYICON_VERSION_4;
         if (!Shell_NotifyIconW(NIM_SETVERSION, ref versionNid))
-        {
             AppDiagnostics.Log($"Shell_NotifyIconW(NIM_SETVERSION) failed: {Marshal.GetLastWin32Error()}");
-        }
 
         _added = true;
         AppDiagnostics.Log("Tray icon added");
@@ -99,21 +93,15 @@ internal sealed class Win32TrayIcon : IDisposable
         }
     }
 
-    /// <summary>
-    /// Returns true if lParam represents a right-click on the tray icon.
-    /// </summary>
     public static bool IsRightClick(IntPtr lParam) =>
         LOWORD(lParam) == WM_RBUTTONUP || LOWORD(lParam) == WM_CONTEXTMENU;
 
-    /// <summary>
-    /// Returns true if lParam represents a left double-click on the tray icon.
-    /// </summary>
+    public static bool IsLeftClick(IntPtr lParam) =>
+        LOWORD(lParam) == WM_LBUTTONUP || LOWORD(lParam) == NIN_SELECT || LOWORD(lParam) == NIN_KEYSELECT;
+
     public static bool IsLeftDoubleClick(IntPtr lParam) =>
         LOWORD(lParam) == WM_LBUTTONDBLCLK;
 
-    /// <summary>
-    /// Returns true if the NIN_BALLOONUSERCLICK notification was sent.
-    /// </summary>
     public static bool IsBalloonClick(IntPtr lParam) =>
         LOWORD(lParam) == NIN_BALLOONUSERCLICK;
 
@@ -128,7 +116,6 @@ internal sealed class Win32TrayIcon : IDisposable
 
     private static ushort LOWORD(IntPtr value) => (ushort)((long)value & 0xFFFF);
 
-    // --- Constants ---
     private const uint NIM_ADD = 0;
     private const uint NIM_MODIFY = 1;
     private const uint NIM_DELETE = 2;
@@ -140,13 +127,14 @@ internal sealed class Win32TrayIcon : IDisposable
     private const uint NIF_SHOWTIP = 0x80;
     private const uint NIIF_INFO = 0x01;
     private const uint NOTIFYICON_VERSION_4 = 4;
+    private const ushort WM_LBUTTONUP = 0x0202;
     private const ushort WM_RBUTTONUP = 0x0205;
     private const ushort WM_LBUTTONDBLCLK = 0x0203;
     private const ushort WM_CONTEXTMENU = 0x007B;
+    private const ushort NIN_SELECT = 0x0400;
+    private const ushort NIN_KEYSELECT = 0x0401;
     private const ushort NIN_BALLOONUSERCLICK = 0x0405;
 
-    // --- Struct ---
-    // Using ByValTStr for string fields ensures proper marshaling to Shell_NotifyIconW.
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NOTIFYICONDATAW
     {
@@ -156,15 +144,12 @@ internal sealed class Win32TrayIcon : IDisposable
         public uint uFlags;
         public uint uCallbackMessage;
         public IntPtr hIcon;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-        public string? szTip;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string? szTip;
         public uint dwState;
         public uint dwStateMask;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
-        public string? szInfo;
-        public uint uVersion; // union with uTimeout
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
-        public string? szInfoTitle;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string? szInfo;
+        public uint uVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string? szInfoTitle;
         public uint dwInfoFlags;
         public Guid guidItem;
         public IntPtr hBalloonIcon;
