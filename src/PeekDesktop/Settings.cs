@@ -12,6 +12,13 @@ namespace PeekDesktop;
 /// </summary>
 public sealed class Settings
 {
+    public const int DefaultFlyAwayAnimationDurationMs = 320;
+    public const int DefaultFlyAwayAnimationFrameRate = 60;
+    public const int MinFlyAwayAnimationDurationMs = 100;
+    public const int MaxFlyAwayAnimationDurationMs = 1000;
+    public const int MinFlyAwayAnimationFrameRate = 15;
+    public const int MaxFlyAwayAnimationFrameRate = 240;
+
     private static readonly string SettingsDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "PeekDesktop");
@@ -25,6 +32,9 @@ public sealed class Settings
     public bool PeekOnDesktopClick { get; set; } = true;
     public bool PeekOnTaskbarClick { get; set; } = false;
     public bool RestoreHiddenWindowsOnAppOpen { get; set; } = true;
+    public bool FlyAwayOnlyClickedMonitor { get; set; } = true;
+    public int FlyAwayAnimationDurationMs { get; set; } = DefaultFlyAwayAnimationDurationMs;
+    public int FlyAwayAnimationFrameRate { get; set; } = DefaultFlyAwayAnimationFrameRate;
     public bool AutoCheckForUpdates { get; set; } = true;
     public PeekMode PeekMode { get; set; } = PeekMode.NativeShowDesktop;
 
@@ -39,6 +49,9 @@ public sealed class Settings
                 bool shouldSave = !JsonContainsProperty(jsonBytes, "RestoreHiddenWindowsOnAppOpen"u8)
                     || !JsonContainsProperty(jsonBytes, "AutoCheckForUpdates"u8)
                     || !JsonContainsProperty(jsonBytes, "PeekOnDesktopClick"u8)
+                    || !JsonContainsProperty(jsonBytes, "FlyAwayOnlyClickedMonitor"u8)
+                    || !JsonContainsProperty(jsonBytes, "FlyAwayAnimationDurationMs"u8)
+                    || !JsonContainsProperty(jsonBytes, "FlyAwayAnimationFrameRate"u8)
                     || missingTaskbarClickSetting;
                 Settings settings = DeserializeUtf8(jsonBytes);
                 if (missingTaskbarClickSetting)
@@ -49,6 +62,26 @@ public sealed class Settings
                 {
                     AppDiagnostics.Log($"Unsupported peek mode '{settings.PeekMode}' migrated to {normalizedMode}.");
                     settings.PeekMode = normalizedMode;
+                    shouldSave = true;
+                }
+
+                int normalizedDuration = Math.Clamp(
+                    settings.FlyAwayAnimationDurationMs,
+                    MinFlyAwayAnimationDurationMs,
+                    MaxFlyAwayAnimationDurationMs);
+                if (settings.FlyAwayAnimationDurationMs != normalizedDuration)
+                {
+                    settings.FlyAwayAnimationDurationMs = normalizedDuration;
+                    shouldSave = true;
+                }
+
+                int normalizedFrameRate = Math.Clamp(
+                    settings.FlyAwayAnimationFrameRate,
+                    MinFlyAwayAnimationFrameRate,
+                    MaxFlyAwayAnimationFrameRate);
+                if (settings.FlyAwayAnimationFrameRate != normalizedFrameRate)
+                {
+                    settings.FlyAwayAnimationFrameRate = normalizedFrameRate;
                     shouldSave = true;
                 }
 
@@ -140,6 +173,21 @@ public sealed class Settings
                 reader.Read();
                 settings.RestoreHiddenWindowsOnAppOpen = reader.GetBoolean();
             }
+            else if (reader.ValueTextEquals("FlyAwayOnlyClickedMonitor"u8))
+            {
+                reader.Read();
+                settings.FlyAwayOnlyClickedMonitor = reader.GetBoolean();
+            }
+            else if (reader.ValueTextEquals("FlyAwayAnimationDurationMs"u8))
+            {
+                reader.Read();
+                settings.FlyAwayAnimationDurationMs = reader.GetInt32();
+            }
+            else if (reader.ValueTextEquals("FlyAwayAnimationFrameRate"u8))
+            {
+                reader.Read();
+                settings.FlyAwayAnimationFrameRate = reader.GetInt32();
+            }
             else if (reader.ValueTextEquals("AutoCheckForUpdates"u8))
             {
                 reader.Read();
@@ -196,6 +244,9 @@ public sealed class Settings
         writer.WriteBoolean("PeekOnDesktopClick"u8, PeekOnDesktopClick);
         writer.WriteBoolean("PeekOnTaskbarClick"u8, PeekOnTaskbarClick);
         writer.WriteBoolean("RestoreHiddenWindowsOnAppOpen"u8, RestoreHiddenWindowsOnAppOpen);
+        writer.WriteBoolean("FlyAwayOnlyClickedMonitor"u8, FlyAwayOnlyClickedMonitor);
+        writer.WriteNumber("FlyAwayAnimationDurationMs"u8, FlyAwayAnimationDurationMs);
+        writer.WriteNumber("FlyAwayAnimationFrameRate"u8, FlyAwayAnimationFrameRate);
         writer.WriteBoolean("AutoCheckForUpdates"u8, AutoCheckForUpdates);
         writer.WriteNumber("PeekMode"u8, (int)PeekMode);
         writer.WriteEndObject();
