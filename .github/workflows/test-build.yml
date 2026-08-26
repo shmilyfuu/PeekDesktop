@@ -27,12 +27,21 @@ jobs:
         run: dotnet restore src/PeekDesktop/PeekDesktop.csproj
 
       - name: Publish win-x64 NativeAOT test build
-        run: dotnet publish src/PeekDesktop/PeekDesktop.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -o artifacts/win-x64
+        run: >-
+          dotnet publish src/PeekDesktop/PeekDesktop.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          --no-restore
+          --nologo
+          /p:DebugType=None
+          /p:DebugSymbols=false
+          -o artifacts/win-x64
 
       - name: Upload test package
         uses: actions/upload-artifact@v4
         with:
           name: PeekDesktop-test-win-x64
-          path: artifacts/win-x64/**
+          path: artifacts/win-x64/PeekDesktop.exe
           if-no-files-found: error
           retention-days: 14
