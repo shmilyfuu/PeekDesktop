@@ -10,9 +10,6 @@ internal sealed class TrayIcon : IDisposable
 {
     private const uint TrayRetryDelayMs = 1000;
 
-    private static readonly int[] FlyAwayDurationPresets = [200, 260, 320, 400, 500];
-    private static readonly int[] FlyAwayFrameRatePresets = [30, 60, 90, 120];
-
     // Menu item IDs
     private const uint ID_ENABLED = 1;
     private const uint ID_STARTUP = 2;
@@ -25,8 +22,7 @@ internal sealed class TrayIcon : IDisposable
     private const uint ID_MODE_MINIMIZE = 10;
     private const uint ID_MODE_FLYAWAY = 11;
     private const uint ID_MODE_NATIVE = 12;
-    private const uint ID_FLYAWAY_DURATION = 13;
-    private const uint ID_FLYAWAY_FRAME_RATE = 14;
+    private const uint ID_FLYAWAY_ANIMATION_SETTINGS = 13;
     private const uint ID_ABOUT = 20;
     private const uint ID_UPDATES = 21;
     private const uint ID_AUTO_UPDATES = 22;
@@ -38,6 +34,7 @@ internal sealed class TrayIcon : IDisposable
     private readonly AppUpdater _appUpdater;
     private readonly Settings _settings;
     private readonly Action _exitAction;
+    private FlyAwaySettingsWindow? _flyAwaySettingsWindow;
 
     public TrayIcon(Win32MessageLoop messageLoop, DesktopPeek desktopPeek, AppUpdater appUpdater, Settings settings, Action exitAction)
     {
@@ -118,8 +115,7 @@ internal sealed class TrayIcon : IDisposable
         menu.AddItem(ID_MODE_NATIVE, "Show Desktop (Explorer)", () => SetPeekMode(PeekMode.NativeShowDesktop), _settings.PeekMode == PeekMode.NativeShowDesktop);
         menu.AddItem(ID_MODE_FLYAWAY, "Fly Away (Experimental)", () => SetPeekMode(PeekMode.FlyAway), _settings.PeekMode == PeekMode.FlyAway);
         menu.AddItem(ID_FLYAWAY_SINGLE_MONITOR, "Fly Away: Only Clicked Monitor", ToggleFlyAwaySingleMonitor, _settings.FlyAwayOnlyClickedMonitor);
-        menu.AddItem(ID_FLYAWAY_DURATION, $"Fly Away Duration: {_settings.FlyAwayAnimationDurationMs} ms", CycleFlyAwayDuration);
-        menu.AddItem(ID_FLYAWAY_FRAME_RATE, $"Fly Away Frame Rate: {_settings.FlyAwayAnimationFrameRate} FPS", CycleFlyAwayFrameRate);
+        menu.AddItem(ID_FLYAWAY_ANIMATION_SETTINGS, "Fly Away Animation...", ShowFlyAwayAnimationSettings);
         menu.AddSeparator();
         menu.AddItem(ID_ABOUT, "About PeekDesktop", ShowAbout);
         menu.AddItem(ID_UPDATES, "Check for Updates", CheckForUpdates);
@@ -192,20 +188,10 @@ internal sealed class TrayIcon : IDisposable
         _settings.Save();
     }
 
-    private void CycleFlyAwayDuration()
+    private void ShowFlyAwayAnimationSettings()
     {
-        _settings.FlyAwayAnimationDurationMs = GetNextPreset(
-            FlyAwayDurationPresets,
-            _settings.FlyAwayAnimationDurationMs);
-        ApplyFlyAwayAnimationSettings();
-    }
-
-    private void CycleFlyAwayFrameRate()
-    {
-        _settings.FlyAwayAnimationFrameRate = GetNextPreset(
-            FlyAwayFrameRatePresets,
-            _settings.FlyAwayAnimationFrameRate);
-        ApplyFlyAwayAnimationSettings();
+        _flyAwaySettingsWindow ??= new FlyAwaySettingsWindow(_settings, ApplyFlyAwayAnimationSettings);
+        _flyAwaySettingsWindow.Show(_messageLoop.Handle);
     }
 
     private void ApplyFlyAwayAnimationSettings()
@@ -213,21 +199,6 @@ internal sealed class TrayIcon : IDisposable
         _desktopPeek.SetFlyAwayAnimation(
             _settings.FlyAwayAnimationDurationMs,
             _settings.FlyAwayAnimationFrameRate);
-        _settings.Save();
-    }
-
-    private static int GetNextPreset(int[] presets, int current)
-    {
-        for (int i = 0; i < presets.Length; i++)
-        {
-            if (presets[i] == current)
-                return presets[(i + 1) % presets.Length];
-
-            if (presets[i] > current)
-                return presets[i];
-        }
-
-        return presets[0];
     }
 
     private void SetPeekMode(PeekMode peekMode)
@@ -268,6 +239,8 @@ internal sealed class TrayIcon : IDisposable
 
     private void DoExit()
     {
+        _flyAwaySettingsWindow?.Dispose();
+        _flyAwaySettingsWindow = null;
         _trayIcon.Remove();
         _exitAction();
     }
@@ -307,6 +280,8 @@ internal sealed class TrayIcon : IDisposable
 
     public void Dispose()
     {
+        _flyAwaySettingsWindow?.Dispose();
+        _flyAwaySettingsWindow = null;
         _trayIcon.Dispose();
     }
 }
