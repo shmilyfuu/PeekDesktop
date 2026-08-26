@@ -11,7 +11,7 @@
     <ApplicationIcon>Assets\PeekDesktop.ico</ApplicationIcon>
     <Authors>Scott Hanselman</Authors>
     <Description>Click your desktop to peek at it — just like macOS Sonoma.</Description>
-    <RepositoryUrl>https://github.com/shanselman/PeekDesktop</RepositoryUrl>
+    <RepositoryUrl>https://github.com/shmilyfuu/PeekDesktop</RepositoryUrl>
     <PublishAot>true</PublishAot>
     <OptimizationPreference>Size</OptimizationPreference>
     <!-- Aggressive size reduction -->
