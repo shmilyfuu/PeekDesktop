@@ -2,13 +2,16 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace PeekDesktop;
 
 public static class Program
 {
     private static Mutex? _mutex;
+    private static DesktopPeek? _desktopPeek;
+    private static TrayIcon? _trayIcon;
+    private static SettingsIpcServer? _settingsIpcServer;
+    private static SettingsWindowLauncher? _settingsWindowLauncher;
 
     [STAThread]
     public static void Main(string[] args)
@@ -16,8 +19,6 @@ public static class Program
         bool isRestarting = args.Length > 0
             && args[0].Equals("--restarting", StringComparison.OrdinalIgnoreCase);
 
-        // Acquire single-instance mutex. If restarting after an update,
-        // retry for a few seconds while the old process exits.
         _mutex = new Mutex(true, @"Local\PeekDesktop_SingleInstance", out bool isNewInstance);
         if (!isNewInstance)
         {
@@ -44,7 +45,8 @@ public static class Program
             }
         }
 
-        // Cleanup after mutex so we don't race with an in-flight update.
+        // This performs local cleanup only. Network update checks/install are
+        // intentionally disabled while the fork's update strategy is redesigned.
         AppUpdater.CleanupPreviousUpdate();
 
         try
@@ -56,8 +58,6 @@ public static class Program
             using var messageLoop = new Win32MessageLoop();
             AppDiagnostics.Log("Message loop created");
 
-            // Defer initialization until the message loop is pumping so hooks
-            // and posted callbacks work correctly.
             messageLoop.PostDeferredAction(1, () =>
             {
                 try
@@ -81,17 +81,16 @@ public static class Program
         }
         finally
         {
+            ShutdownComponents();
+
             if (_mutex is not null)
             {
                 try { _mutex.ReleaseMutex(); } catch { }
                 _mutex.Dispose();
+                _mutex = null;
             }
         }
     }
-
-    private static DesktopPeek? _desktopPeek;
-    private static TrayIcon? _trayIcon;
-    private static AppUpdater? _appUpdater;
 
     private static void Initialize(Win32MessageLoop messageLoop)
     {
@@ -104,35 +103,36 @@ public static class Program
 
         _desktopPeek = new DesktopPeek(settings, messageLoop.BeginInvoke);
         _desktopPeek.SetRestoreHiddenWindowsOnAppOpen(settings.RestoreHiddenWindowsOnAppOpen);
-        _appUpdater = new AppUpdater(messageLoop);
 
-        // Let the updater release the mutex before relaunching
-        AppUpdater.ReleaseMutex = () =>
-        {
-            try
-            {
-                _mutex?.ReleaseMutex();
-                _mutex?.Dispose();
-                _mutex = null;
-            }
-            catch { /* best effort */ }
-        };
+        _settingsIpcServer = new SettingsIpcServer(settings, _desktopPeek, messageLoop.BeginInvoke);
+        _settingsIpcServer.Start();
+        _settingsWindowLauncher = new SettingsWindowLauncher(_settingsIpcServer.PipeName);
 
-        _trayIcon = new TrayIcon(messageLoop, _desktopPeek, _appUpdater, settings, () => messageLoop.Quit());
+        _trayIcon = new TrayIcon(
+            messageLoop,
+            _desktopPeek,
+            _settingsWindowLauncher,
+            () => messageLoop.Quit());
 
         if (settings.Enabled)
             _desktopPeek.Start();
 
-        if (settings.AutoCheckForUpdates)
-        {
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(2000);
+        AppDiagnostics.Log("Automatic update checks are disabled in this build");
+    }
 
-                if (_appUpdater is not null)
-                    await _appUpdater.CheckForUpdatesAsync(interactive: false);
-            });
-        }
+    private static void ShutdownComponents()
+    {
+        try { _trayIcon?.Dispose(); } catch { }
+        _trayIcon = null;
+
+        try { _settingsWindowLauncher?.Dispose(); } catch { }
+        _settingsWindowLauncher = null;
+
+        try { _settingsIpcServer?.Dispose(); } catch { }
+        _settingsIpcServer = null;
+
+        try { _desktopPeek?.Dispose(); } catch { }
+        _desktopPeek = null;
     }
 
     private static void ConfigureTraceLogging()
