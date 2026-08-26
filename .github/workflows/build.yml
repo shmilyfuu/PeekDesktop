@@ -4,21 +4,15 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       version:
         description: Release version without the leading v
-        required: false
-        default: '1.0.0'
+        required: true
         type: string
 
 permissions:
   contents: write
-
-env:
-  ONE_TIME_MAIN_RELEASE_VERSION: '1.0.0'
 
 jobs:
   build:
@@ -55,7 +49,7 @@ jobs:
           } elseif ($env:EVENT_NAME -eq 'workflow_dispatch' -and -not [string]::IsNullOrWhiteSpace($env:INPUT_VERSION)) {
             $version = $env:INPUT_VERSION.TrimStart('v')
           } else {
-            $version = $env:ONE_TIME_MAIN_RELEASE_VERSION
+            throw "A release version is required."
           }
 
           if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
@@ -128,7 +122,6 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
