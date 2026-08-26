@@ -186,47 +186,70 @@ Requirements:
 - Windows 10 / 11
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 
-```bash
+The commands below are written for **PowerShell on Windows**.
+
+Clone the repository:
+
+```powershell
 git clone https://github.com/shmilyfuu/PeekDesktop.git
 cd PeekDesktop
+```
+
+### Development build
+
+Use this for normal source builds and local development. It builds the current source tree, including all features present on the checked-out branch or commit.
+
+```powershell
 dotnet build src/PeekDesktop/PeekDesktop.csproj
 ```
 
-Run the application:
+Run directly from source:
 
-```bash
+```powershell
 dotnet run --project src/PeekDesktop/PeekDesktop.csproj
 ```
 
 Run the P/Invoke safety harness:
 
-```bash
+```powershell
 dotnet run --project src/PeekDesktop.InteropHarness/PeekDesktop.InteropHarness.csproj -- 10000
 ```
 
-Publish x64 NativeAOT:
+### NativeAOT publish build
 
-```bash
-dotnet publish src/PeekDesktop/PeekDesktop.csproj \
-  -c Release \
-  -r win-x64 \
-  --self-contained \
-  -p:PublishSingleFile=true \
-  -p:DebugType=None \
+Use `dotnet publish` to produce the same kind of self-contained NativeAOT executable used by this fork's release workflow. A local publish contains the functionality of the currently checked-out source, but its version metadata and exact binary bytes can differ from an official GitHub Release.
+
+Publish x64:
+
+```powershell
+dotnet publish src/PeekDesktop/PeekDesktop.csproj `
+  -c Release `
+  -r win-x64 `
+  --self-contained `
+  -p:PublishSingleFile=true `
+  -p:DebugType=None `
   -p:DebugSymbols=false
 ```
 
-Publish ARM64 NativeAOT:
+Publish ARM64:
 
-```bash
-dotnet publish src/PeekDesktop/PeekDesktop.csproj \
-  -c Release \
-  -r win-arm64 \
-  --self-contained \
-  -p:PublishSingleFile=true \
-  -p:DebugType=None \
+```powershell
+dotnet publish src/PeekDesktop/PeekDesktop.csproj `
+  -c Release `
+  -r win-arm64 `
+  --self-contained `
+  -p:PublishSingleFile=true `
+  -p:DebugType=None `
   -p:DebugSymbols=false
 ```
+
+The published executable is normally located under:
+
+```text
+src\PeekDesktop\bin\Release\net10.0-windows\<runtime>\publish\PeekDesktop.exe
+```
+
+For an official GitHub Release, `.github/workflows/build.yml` also supplies explicit semantic-version metadata and packages the resulting `PeekDesktop.exe` into the architecture-specific ZIP files.
 
 ## Project Structure
 
