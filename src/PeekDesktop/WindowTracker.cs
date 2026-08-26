@@ -12,19 +12,35 @@ namespace PeekDesktop;
 /// </summary>
 public sealed class WindowTracker
 {
-    private const int AnimationSteps = 12;
-    private const int AnimationDurationMs = 160;
     private const int OffscreenMargin = 64;
 
     private readonly List<WindowInfo> _savedWindows = new();
+    private int _flyAwayAnimationDurationMs = Settings.DefaultFlyAwayAnimationDurationMs;
+    private int _flyAwayAnimationFrameRate = Settings.DefaultFlyAwayAnimationFrameRate;
 
     public bool HasWindows => _savedWindows.Count > 0;
     public int SavedWindowCount => _savedWindows.Count;
 
+    public void ConfigureFlyAwayAnimation(int durationMs, int frameRate)
+    {
+        _flyAwayAnimationDurationMs = Math.Clamp(
+            durationMs,
+            Settings.MinFlyAwayAnimationDurationMs,
+            Settings.MaxFlyAwayAnimationDurationMs);
+        _flyAwayAnimationFrameRate = Math.Clamp(
+            frameRate,
+            Settings.MinFlyAwayAnimationFrameRate,
+            Settings.MaxFlyAwayAnimationFrameRate);
+
+        AppDiagnostics.Log(
+            $"FlyAway animation configured: {_flyAwayAnimationDurationMs}ms at {_flyAwayAnimationFrameRate} FPS");
+    }
+
     /// <summary>
-    /// Snapshot all visible, non-system top-level windows and their placements.
+    /// Snapshot visible, non-system top-level windows and their placements.
+    /// When targetMonitor is non-zero, only windows primarily located on that monitor are captured.
     /// </summary>
-    public void CaptureWindows()
+    public void CaptureWindows(IntPtr targetMonitor = default)
     {
         var stopwatch = Stopwatch.StartNew();
         _savedWindows.Clear();
@@ -40,6 +56,16 @@ public sealed class WindowTracker
                     if (!NativeMethods.GetWindowRect(hwnd, out NativeMethods.RECT bounds))
                         bounds = placement.rcNormalPosition;
 
+                    if (targetMonitor != IntPtr.Zero)
+                    {
+                        NativeMethods.RECT monitorProbe = bounds;
+                        IntPtr windowMonitor = NativeMethods.MonitorFromRect(
+                            ref monitorProbe,
+                            NativeMethods.MONITOR_DEFAULTTONEAREST);
+                        if (windowMonitor != targetMonitor)
+                            return true;
+                    }
+
                     _savedWindows.Add(new WindowInfo(hwnd, placement, bounds));
                     AppDiagnostics.LogWindow("Captured window", hwnd);
                 }
@@ -47,7 +73,10 @@ public sealed class WindowTracker
             return true;
         }, IntPtr.Zero);
 
-        AppDiagnostics.Log($"Capture complete: {_savedWindows.Count} window(s) saved");
+        string scope = targetMonitor == IntPtr.Zero
+            ? "all monitors"
+            : $"monitor 0x{targetMonitor.ToInt64():X}";
+        AppDiagnostics.Log($"Capture complete: {_savedWindows.Count} window(s) saved from {scope}");
         AppDiagnostics.Metric($"CaptureWindows: {_savedWindows.Count} window(s) in {stopwatch.ElapsedMilliseconds}ms");
     }
 
@@ -284,21 +313,30 @@ public sealed class WindowTracker
         };
     }
 
-    private static void AnimateWindows(IReadOnlyList<AnimatedWindow> windows)
+    private void AnimateWindows(IReadOnlyList<AnimatedWindow> windows)
     {
         if (windows.Count == 0)
             return;
 
-        int sleepMs = Math.Max(1, AnimationDurationMs / AnimationSteps);
         const uint flags = NativeMethods.SWP_NOACTIVATE
                          | NativeMethods.SWP_NOZORDER
                          | NativeMethods.SWP_NOOWNERZORDER
                          | NativeMethods.SWP_NOSENDCHANGING
                          | NativeMethods.SWP_ASYNCWINDOWPOS;
 
-        for (int step = 1; step <= AnimationSteps; step++)
+        double durationMs = _flyAwayAnimationDurationMs;
+        double frameIntervalMs = 1000d / _flyAwayAnimationFrameRate;
+        double nextFrameMs = Math.Min(frameIntervalMs, durationMs);
+        var animationClock = Stopwatch.StartNew();
+        int renderedFrames = 0;
+
+        while (true)
         {
-            double progress = EaseOutCubic(step / (double)AnimationSteps);
+            WaitUntil(animationClock, nextFrameMs);
+
+            double elapsedMs = Math.Min(animationClock.Elapsed.TotalMilliseconds, durationMs);
+            double linearProgress = durationMs <= 0d ? 1d : elapsedMs / durationMs;
+            double progress = EaseInOutCubic(Math.Clamp(linearProgress, 0d, 1d));
 
             foreach (var window in windows)
             {
@@ -319,14 +357,48 @@ public sealed class WindowTracker
                     flags);
             }
 
-            Thread.Sleep(sleepMs);
+            renderedFrames++;
+            if (elapsedMs >= durationMs)
+                break;
+
+            nextFrameMs += frameIntervalMs;
+            if (nextFrameMs <= elapsedMs)
+                nextFrameMs = elapsedMs + frameIntervalMs;
+            if (nextFrameMs > durationMs)
+                nextFrameMs = durationMs;
+        }
+
+        AppDiagnostics.Metric(
+            $"AnimateWindows: {windows.Count} window(s), {renderedFrames} frame(s), " +
+            $"target={_flyAwayAnimationDurationMs}ms/{_flyAwayAnimationFrameRate}fps, actual={animationClock.ElapsedMilliseconds}ms");
+    }
+
+    private static void WaitUntil(Stopwatch stopwatch, double targetElapsedMs)
+    {
+        while (true)
+        {
+            double remainingMs = targetElapsedMs - stopwatch.Elapsed.TotalMilliseconds;
+            if (remainingMs <= 0d)
+                return;
+
+            if (remainingMs > 2d)
+            {
+                Thread.Sleep(Math.Max(1, (int)Math.Floor(remainingMs - 1d)));
+            }
+            else
+            {
+                Thread.Yield();
+            }
         }
     }
 
-    private static double EaseOutCubic(double t)
+    private static double EaseInOutCubic(double t)
     {
-        double inverse = 1d - t;
-        return 1d - (inverse * inverse * inverse);
+        if (t < 0.5d)
+            return 4d * t * t * t;
+
+        double inverse = -2d * t + 2d;
+        return 1d - (inverse * inverse * inverse / 2d);
     }
 
     private static NativeMethods.RECT LerpRect(NativeMethods.RECT from, NativeMethods.RECT to, double t)
