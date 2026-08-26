@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace PeekDesktop;
 
@@ -16,8 +15,6 @@ public static class Program
         bool isRestarting = args.Length > 0
             && args[0].Equals("--restarting", StringComparison.OrdinalIgnoreCase);
 
-        // Acquire single-instance mutex. If restarting after an update,
-        // retry for a few seconds while the old process exits.
         _mutex = new Mutex(true, @"Local\PeekDesktop_SingleInstance", out bool isNewInstance);
         if (!isNewInstance)
         {
@@ -44,7 +41,8 @@ public static class Program
             }
         }
 
-        // Cleanup after mutex so we don't race with an in-flight update.
+        // Keep cleanup for any leftovers created by older versions. The current
+        // branch does not perform update checks or downloads.
         AppUpdater.CleanupPreviousUpdate();
 
         try
@@ -56,8 +54,6 @@ public static class Program
             using var messageLoop = new Win32MessageLoop();
             AppDiagnostics.Log("Message loop created");
 
-            // Defer initialization until the message loop is pumping so hooks
-            // and posted callbacks work correctly.
             messageLoop.PostDeferredAction(1, () =>
             {
                 try
@@ -91,7 +87,6 @@ public static class Program
 
     private static DesktopPeek? _desktopPeek;
     private static TrayIcon? _trayIcon;
-    private static AppUpdater? _appUpdater;
 
     private static void Initialize(Win32MessageLoop messageLoop)
     {
@@ -104,35 +99,12 @@ public static class Program
 
         _desktopPeek = new DesktopPeek(settings, messageLoop.BeginInvoke);
         _desktopPeek.SetRestoreHiddenWindowsOnAppOpen(settings.RestoreHiddenWindowsOnAppOpen);
-        _appUpdater = new AppUpdater(messageLoop);
-
-        // Let the updater release the mutex before relaunching
-        AppUpdater.ReleaseMutex = () =>
-        {
-            try
-            {
-                _mutex?.ReleaseMutex();
-                _mutex?.Dispose();
-                _mutex = null;
-            }
-            catch { /* best effort */ }
-        };
-
-        _trayIcon = new TrayIcon(messageLoop, _desktopPeek, _appUpdater, settings, () => messageLoop.Quit());
+        _trayIcon = new TrayIcon(messageLoop, _desktopPeek, settings, () => messageLoop.Quit());
 
         if (settings.Enabled)
             _desktopPeek.Start();
 
-        if (settings.AutoCheckForUpdates)
-        {
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(2000);
-
-                if (_appUpdater is not null)
-                    await _appUpdater.CheckForUpdatesAsync(interactive: false);
-            });
-        }
+        AppDiagnostics.Log("Update checks are temporarily disabled for this fork");
     }
 
     private static void ConfigureTraceLogging()
