@@ -9,6 +9,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PeekDesktop.InteropHarness", "src\PeekDesktop.InteropHarness\PeekDesktop.InteropHarness.csproj", "{748B7934-393F-49F0-9F96-1DBE91FB5970}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PeekDesktop.Settings", "src\PeekDesktop.Settings\PeekDesktop.Settings.csproj", "{C28D7791-502B-4BB6-9B3D-BF376B53467D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -43,11 +45,20 @@ Global
 		{748B7934-393F-49F0-9F96-1DBE91FB5970}.Release|x64.Build.0 = Release|Any CPU
 		{748B7934-393F-49F0-9F96-1DBE91FB5970}.Release|x86.ActiveCfg = Release|Any CPU
 		{748B7934-393F-49F0-9F96-1DBE91FB5970}.Release|x86.Build.0 = Release|Any CPU
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Debug|Any CPU.Build.0 = Debug|x64
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Debug|x64.ActiveCfg = Debug|x64
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Debug|x64.Build.0 = Debug|x64
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Release|Any CPU.ActiveCfg = Release|x64
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Release|Any CPU.Build.0 = Release|x64
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Release|x64.ActiveCfg = Release|x64
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{748B7934-393F-49F0-9F96-1DBE91FB5970} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{C28D7791-502B-4BB6-9B3D-BF376B53467D} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal
