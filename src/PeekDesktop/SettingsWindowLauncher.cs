@@ -73,12 +73,12 @@ internal sealed class SettingsWindowLauncher : IDisposable
     {
         IntPtr foundWindow = IntPtr.Zero;
 
-        EnumWindows((hwnd, _) =>
+        EnumWindows((hwnd, lParam) =>
         {
             if (!IsWindowVisible(hwnd))
                 return true;
 
-            _ = GetWindowThreadProcessId(hwnd, out uint ownerProcessId);
+            GetWindowThreadProcessId(hwnd, out uint ownerProcessId);
             if (ownerProcessId != (uint)processId)
                 return true;
 
