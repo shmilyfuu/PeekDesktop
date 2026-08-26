@@ -7,6 +7,10 @@ on:
       - feature/winui-settings
   workflow_dispatch:
 
+concurrency:
+  group: test-build-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -34,7 +38,26 @@ jobs:
         run: dotnet publish src/PeekDesktop/PeekDesktop.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -o artifacts/stage/Core
 
       - name: Publish WinUI settings runtime
+        id: publish_winui
+        continue-on-error: true
         run: dotnet publish src/PeekDesktop.Settings/PeekDesktop.Settings.csproj -c Release -r win-x64 --self-contained true --no-restore --nologo -p:Platform=x64 -p:WindowsAppSDKSelfContained=true -o artifacts/stage/Runtime
+
+      - name: Show WinUI XAML compiler diagnostics
+        if: steps.publish_winui.outcome == 'failure'
+        shell: pwsh
+        run: |
+          Write-Host 'WinUI obj diagnostics:'
+          Get-ChildItem 'src/PeekDesktop.Settings/obj' -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -in @('input.json','output.json') -or $_.Extension -eq '.log' } |
+            ForEach-Object {
+              Write-Host "===== $($_.FullName) ====="
+              Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+            }
+
+      - name: Fail when WinUI publish failed
+        if: steps.publish_winui.outcome == 'failure'
+        shell: pwsh
+        run: throw 'WinUI settings publish failed. See XAML compiler diagnostics above.'
 
       - name: Assemble portable folder
         shell: pwsh
