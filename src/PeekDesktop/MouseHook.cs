@@ -4,16 +4,6 @@ namespace PeekDesktop;
 
 internal readonly record struct PendingMouseClick(IntPtr Window, NativeMethods.POINT Point);
 
-public sealed class PeekSurfaceClickEventArgs : EventArgs
-{
-    public IntPtr Monitor { get; }
-
-    public PeekSurfaceClickEventArgs(IntPtr monitor)
-    {
-        Monitor = monitor;
-    }
-}
-
 internal sealed class MouseClickTracker
 {
     private bool _hasPreviousClick;
@@ -158,11 +148,12 @@ public sealed class MouseHook : IDisposable
         }
     }
 
+    internal IntPtr LastPeekSurfaceMonitor { get; private set; }
+
     /// <summary>
     /// Raised (on the UI thread) when a left-click on empty desktop wallpaper is detected.
-    /// Includes the monitor containing the click so monitor-scoped peek modes can filter windows.
     /// </summary>
-    public event EventHandler<PeekSurfaceClickEventArgs>? DesktopClicked;
+    public event EventHandler? DesktopClicked;
 
     /// <summary>
     /// Raised (on the UI thread) when a left-click lands on a desktop icon.
@@ -171,9 +162,8 @@ public sealed class MouseHook : IDisposable
 
     /// <summary>
     /// Raised (on the UI thread) when a left-click lands on empty taskbar space.
-    /// Includes the monitor containing the click so monitor-scoped peek modes can filter windows.
     /// </summary>
-    public event EventHandler<PeekSurfaceClickEventArgs>? TaskbarClicked;
+    public event EventHandler? TaskbarClicked;
 
     public MouseHook(Action<Action> beginInvoke)
     {
@@ -203,6 +193,7 @@ public sealed class MouseHook : IDisposable
             AppDiagnostics.Log($"Mouse hook uninstalled: 0x{_hookId.ToInt64():X}");
             _hookId = IntPtr.Zero;
             _clickTracker.Reset();
+            LastPeekSurfaceMonitor = IntPtr.Zero;
         }
     }
 
@@ -295,11 +286,11 @@ public sealed class MouseHook : IDisposable
             MonitorTaskbarClicks);
         AppDiagnostics.Log($"Mouse click classification: {clickTarget}");
 
-        var peekSurfaceArgs = new PeekSurfaceClickEventArgs(hMonitor);
         switch (clickTarget)
         {
             case DesktopClickTarget.DesktopBackground:
-                DesktopClicked?.Invoke(this, peekSurfaceArgs);
+                LastPeekSurfaceMonitor = hMonitor;
+                DesktopClicked?.Invoke(this, EventArgs.Empty);
                 break;
 
             case DesktopClickTarget.DesktopIcon:
@@ -307,7 +298,8 @@ public sealed class MouseHook : IDisposable
                 break;
 
             case DesktopClickTarget.TaskbarBackground:
-                TaskbarClicked?.Invoke(this, peekSurfaceArgs);
+                LastPeekSurfaceMonitor = hMonitor;
+                TaskbarClicked?.Invoke(this, EventArgs.Empty);
                 break;
         }
     }
