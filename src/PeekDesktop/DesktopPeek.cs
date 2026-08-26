@@ -36,11 +36,13 @@ public sealed class DesktopPeek : IDisposable
     private bool _pauseWhileFullscreenAppActive;
     private bool _restoreHiddenWindowsOnAppOpen;
     private bool _peekOnDesktopClick;
+    private bool _flyAwayOnlyClickedMonitor;
     private bool _isSuppressedForGaming;
     private long _ignoreFocusUntil;
     private long _ignoreRestoreClickUntil;
     private string _gameSuppressionReason = string.Empty;
     private PeekMode _activePeekMode = PeekMode.Minimize;
+    private IntPtr _peekMonitor = IntPtr.Zero;
 
     public bool IsEnabled { get; set; } = true;
     public bool IsPeeking => _isPeeking;
@@ -58,6 +60,10 @@ public sealed class DesktopPeek : IDisposable
         _pauseWhileFullscreenAppActive = settings.PauseWhileFullscreenAppActive;
         _restoreHiddenWindowsOnAppOpen = settings.RestoreHiddenWindowsOnAppOpen;
         _peekOnDesktopClick = settings.PeekOnDesktopClick;
+        _flyAwayOnlyClickedMonitor = settings.FlyAwayOnlyClickedMonitor;
+        _windowTracker.ConfigureFlyAwayAnimation(
+            settings.FlyAwayAnimationDurationMs,
+            settings.FlyAwayAnimationFrameRate);
         AppDiagnostics.Log("DesktopPeek created");
         _mouseHook.DesktopClicked += OnDesktopClicked;
         _mouseHook.DesktopIconClicked += OnDesktopIconClicked;
@@ -110,6 +116,17 @@ public sealed class DesktopPeek : IDisposable
         AppDiagnostics.Log($"RestoreHiddenWindowsOnAppOpen set to {enabled}");
     }
 
+    public void SetFlyAwayOnlyClickedMonitor(bool enabled)
+    {
+        _flyAwayOnlyClickedMonitor = enabled;
+        AppDiagnostics.Log($"FlyAwayOnlyClickedMonitor set to {enabled}");
+    }
+
+    public void SetFlyAwayAnimation(int durationMs, int frameRate)
+    {
+        _windowTracker.ConfigureFlyAwayAnimation(durationMs, frameRate);
+    }
+
     public void SetPeekMode(PeekMode peekMode)
     {
         peekMode = NormalizePeekMode(peekMode);
@@ -132,7 +149,9 @@ public sealed class DesktopPeek : IDisposable
             return;
 
         AppDiagnostics.Log("Applying newly selected peek mode immediately");
+        IntPtr previousPeekMonitor = _peekMonitor;
         RestoreWindows();
+        _peekMonitor = previousPeekMonitor;
         PeekDesktopNow();
     }
 
@@ -161,7 +180,7 @@ public sealed class DesktopPeek : IDisposable
             RestoreWindows();
     }
 
-    private void OnDesktopClicked(object? sender, EventArgs e)
+    private void OnDesktopClicked(object? sender, PeekSurfaceClickEventArgs e)
     {
         if (!_peekOnDesktopClick)
         {
@@ -169,15 +188,15 @@ public sealed class DesktopPeek : IDisposable
             return;
         }
 
-        HandlePeekSurfaceClicked("Desktop");
+        HandlePeekSurfaceClicked("Desktop", e.Monitor);
     }
 
-    private void OnTaskbarClicked(object? sender, EventArgs e)
+    private void OnTaskbarClicked(object? sender, PeekSurfaceClickEventArgs e)
     {
-        HandlePeekSurfaceClicked("Taskbar");
+        HandlePeekSurfaceClicked("Taskbar", e.Monitor);
     }
 
-    private void HandlePeekSurfaceClicked(string source)
+    private void HandlePeekSurfaceClicked(string source, IntPtr clickedMonitor)
     {
         if (!IsEnabled || _isTransitioning)
         {
@@ -204,7 +223,8 @@ public sealed class DesktopPeek : IDisposable
             return;
         }
 
-        AppDiagnostics.Log($"{source} click accepted; entering peek mode");
+        _peekMonitor = clickedMonitor;
+        AppDiagnostics.Log($"{source} click accepted on monitor 0x{clickedMonitor.ToInt64():X}; entering peek mode");
         PeekDesktopNow();
     }
 
@@ -285,6 +305,7 @@ public sealed class DesktopPeek : IDisposable
                 _ignoreFocusUntil = 0;
                 _ignoreRestoreClickUntil = 0;
                 _activePeekMode = PeekMode;
+                _peekMonitor = IntPtr.Zero;
             }
 
             return;
@@ -337,7 +358,11 @@ public sealed class DesktopPeek : IDisposable
                 _activePeekMode = PeekMode.Minimize;
             }
 
-            _windowTracker.CaptureWindows();
+            IntPtr captureMonitor = _activePeekMode == PeekMode.FlyAway
+                && _flyAwayOnlyClickedMonitor
+                ? _peekMonitor
+                : IntPtr.Zero;
+            _windowTracker.CaptureWindows(captureMonitor);
 
             if (_windowTracker.HasWindows)
             {
@@ -356,6 +381,7 @@ public sealed class DesktopPeek : IDisposable
             }
             else
             {
+                _peekMonitor = IntPtr.Zero;
                 AppDiagnostics.Log("No restoreable windows were captured");
             }
         }
@@ -411,6 +437,7 @@ public sealed class DesktopPeek : IDisposable
 
             _isPeeking = false;
             _activePeekMode = PeekMode;
+            _peekMonitor = IntPtr.Zero;
             AppDiagnostics.Log("Restore complete; returned to idle");
         }
         finally
