@@ -25,8 +25,10 @@ internal sealed class SettingsWindowLauncher : IDisposable
         {
             if (_settingsProcess is { HasExited: false })
             {
-                if (TryActivateProcessWindow(_settingsProcess.Id))
-                    return;
+                // The process may still be creating its first XAML window. In that
+                // case simply keep the existing process instead of launching a duplicate.
+                TryActivateProcessWindow(_settingsProcess.Id);
+                return;
             }
 
             _settingsProcess?.Dispose();
@@ -96,8 +98,27 @@ internal sealed class SettingsWindowLauncher : IDisposable
 
     public void Dispose()
     {
-        _settingsProcess?.Dispose();
-        _settingsProcess = null;
+        if (_settingsProcess is null)
+            return;
+
+        try
+        {
+            if (!_settingsProcess.HasExited)
+            {
+                _settingsProcess.CloseMainWindow();
+                if (!_settingsProcess.WaitForExit(750))
+                    _settingsProcess.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.Log($"Settings process shutdown failed (non-fatal): {ex.Message}");
+        }
+        finally
+        {
+            _settingsProcess.Dispose();
+            _settingsProcess = null;
+        }
     }
 
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
